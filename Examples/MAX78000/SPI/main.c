@@ -52,11 +52,12 @@
 #include "nvic_table.h"
 #include "spi.h"
 #include "uart.h"
+#include "gpio.h"
 
 /***** Preprocessors *****/
-#define MASTERSYNC 1
+#define MASTERSYNC 0
 #define MASTERASYNC 0
-#define MASTERDMA 0
+#define MASTERDMA 1
 
 #if (!(MASTERSYNC || MASTERASYNC || MASTERDMA))
 #error "You must set either MASTERSYNC or MASTERASYNC or MASTERDMA to 1."
@@ -66,10 +67,10 @@
 #endif
 
 /***** Definitions *****/
-#define DATA_LEN 100 // Words
+#define DATA_LEN 1000 // Words
 #define DATA_VALUE 0xA5A5 // This is for master mode only...
 #define VALUE 0xFFFF
-#define SPI_SPEED 100000 // Bit Rate
+#define SPI_SPEED 1000000 // Bit Rate
 
 #ifdef BOARD_EVKIT_V1
 #define SPI_INSTANCE_NUM 0
@@ -84,10 +85,45 @@
 /***** Globals *****/
 uint16_t rx_data[DATA_LEN];
 uint16_t tx_data[DATA_LEN];
+uint8_t rx_data_8[DATA_LEN];
+uint8_t tx_data_8[DATA_LEN];
+mxc_spi_req_t req;
+mxc_spi_pins_t spi_pins;
+
 volatile int SPI_FLAG;
 volatile uint8_t DMA_FLAG = 0;
+//// ADI AD4696 register addresses
 
+#define DEVICE_TYPE 0x8003
+#define VENDOR_L 0x800C
+#define VENDOR_H 0x800D
+
+
+////
 /***** Functions *****/
+void print_GPIO(void){
+	printf("\n***** GPIO REGISTERS *****\n");
+	//format
+	// 	printf("0x:%08X\n",     *(  (volatile uint32_t *) <address in hex>  )      );
+	//
+	uint32_t gpio_base = 0x40008000;
+	printf("00 - EN0:  %08X\n",*((volatile uint32_t *) (gpio_base + 0x00)));
+	printf("0C - OUTEN:%08X\n",*((volatile uint32_t *) (gpio_base + 0x0C)));
+	printf("18 - OUT:  %08X\n",*((volatile uint32_t *) (gpio_base + 0x18)));
+	printf("24 - IN:   %08X\n",*((volatile uint32_t *) (gpio_base + 0x24)));
+	printf("60 - PAD0: %08X\n",*((volatile uint32_t *) (gpio_base + 0x60)));
+	printf("64 - PAD1: %08X\n",*((volatile uint32_t *) (gpio_base + 0x64)));
+	printf("68 - EN1:  %08X\n",*((volatile uint32_t *) (gpio_base + 0x68)));
+	printf("74 - EN2:  %08X\n",*((volatile uint32_t *) (gpio_base + 0x74)));
+	printf("B0 - DS0:  %08X\n",*((volatile uint32_t *) (gpio_base + 0xB0)));
+	printf("B4 - DS11: %08X\n",*((volatile uint32_t *) (gpio_base + 0xB4)));
+    printf("B8 - PS:   %08X\n",*((volatile uint32_t *) (gpio_base + 0xB8)));
+	printf("C0 - VSSL: %08X\n",*((volatile uint32_t *) (gpio_base + 0xC0)));
+	printf("*************************\n");
+
+}
+
+
 void SPI_IRQHandler(void)
 {
     MXC_SPI_AsyncHandler(SPI);
@@ -108,8 +144,327 @@ void SPI_Callback(mxc_spi_req_t *req, int error)
 {
     SPI_FLAG = error;
 }
+// configure AD4696 nRESET (p1.1), CNV(p1.6) and GPIO (p0.19)
+const mxc_gpio_cfg_t debug_pin[] = {
+    { MXC_GPIO1, MXC_GPIO_PIN_6, MXC_GPIO_FUNC_OUT, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO }, //CNV
+    { MXC_GPIO1, MXC_GPIO_PIN_1, MXC_GPIO_FUNC_OUT, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO },  //nRESET
+    //TODO: p0.19
+};
+const unsigned int num_debugs = (sizeof(debug_pin) / sizeof(mxc_gpio_cfg_t));
+
+int debug_Init(void)
+{
+    int retval = E_NO_ERROR;
+    unsigned int i;
+
+    /* setup 2 GPIOs for the debug */
+    for (i = 0; i < num_debugs; i++) {
+        if (MXC_GPIO_Config(&debug_pin[i]) != E_NO_ERROR) {
+            retval = E_UNKNOWN;
+        }
+    }
+
+    return retval;
+}
+
+int MAX78000_SPI_Config(void) {
+    
+    int retVal;
+    // mxc_spi_req_t req;
+    // mxc_spi_pins_t spi_pins;
+    
+    spi_pins.clock = TRUE;
+    spi_pins.miso = TRUE;
+    spi_pins.mosi = TRUE;
+    spi_pins.sdio2 = FALSE;
+    spi_pins.sdio3 = FALSE;
+    spi_pins.ss0 = TRUE;
+    spi_pins.ss1 = TRUE;
+    spi_pins.ss2 = FALSE;
+    spi_pins.vddioh = FALSE;
+
+    req.ssIdx = 1;
+    req.ssDeassert = 1;
+    req.txCnt = 0;
+    req.rxCnt = 0;
+    req.completeCB = (spi_complete_cb_t)SPI_Callback;
+    SPI_FLAG = 1;
+
+#if MASTERSYNC
+    printf("Performing blocking (synchronous) transactions...\n");
+#endif
+#if MASTERASYNC
+    printf("Performing non-blocking (asynchronous) transactions...\n");
+    MXC_NVIC_SetVector(SPI_IRQ, SPI_IRQHandler);
+#endif
+#if MASTERDMA
+    printf("Performing transactions with DMA...\n");
+    MXC_DMA_ReleaseChannel(0);
+    MXC_DMA_ReleaseChannel(1);
+
+    NVIC_EnableIRQ(DMA0_IRQn);
+    NVIC_EnableIRQ(DMA1_IRQn);
+#endif
+
+   retVal = MXC_SPI_Init(SPI, 1, 0, 1, 0, SPI_SPEED, spi_pins);
+    if (retVal != E_NO_ERROR) {
+        printf("\nSPI INITIALIZATION ERROR\n");
+        return retVal;
+    }
+   retVal = MXC_SPI_SetDataSize(SPI, 8);
+
+    if (retVal != E_NO_ERROR) {
+        printf("\nSPI SET DATASIZE ERROR: %d\n", retVal);
+        return retVal;
+    }
+
+    retVal = MXC_SPI_SetWidth(SPI, SPI_WIDTH_STANDARD);
+
+    if (retVal != E_NO_ERROR) {
+        printf("\nSPI SET WIDTH ERROR: %d\n", retVal);
+        return retVal;
+    }
+
+    return 0;
+}
+
+
+void AD4696_RESET(void) {
+    MXC_GPIO_OutClr(MXC_GPIO1, MXC_GPIO_PIN_1);
+}
+
+void AD4696_GO(void){
+    MXC_GPIO_OutSet(MXC_GPIO1, MXC_GPIO_PIN_1);
+}
+
+int AD4696_READ(uint16_t addr) {
+    
+    int retVal;
+    //mxc_spi_req_t req;
+
+    tx_data_8[0] = (addr & 0xFF00 )>>8;//0x80;
+    tx_data_8[1] = (addr & 0x00FF )>>0;//0x0C;
+    tx_data_8[2] = 0x00;
+    req.spi = SPI;
+    //req.txData = (uint8_t *)tx_data;
+    //req.rxData = (uint8_t *)rx_data;
+    req.txData = (uint8_t *)tx_data_8;
+    req.rxData = (uint8_t *)rx_data_8;
+    req.txLen = 3;
+    req.rxLen = 3;
+    // req.ssIdx = 1;
+    // req.ssDeassert = 1;
+    // req.txCnt = 0;
+    // req.rxCnt = 0;
+    // req.completeCB = (spi_complete_cb_t)SPI_Callback;
+    // SPI_FLAG = 1;
+
+    //retVal = MXC_SPI_SetDataSize(SPI, 16);
+    // retVal = MXC_SPI_SetDataSize(SPI, 8);
+
+    // if (retVal != E_NO_ERROR) {
+    //     printf("\nSPI SET DATASIZE ERROR: %d\n", retVal);
+    //     return retVal;
+    // }
+
+    // retVal = MXC_SPI_SetWidth(SPI, SPI_WIDTH_STANDARD);
+
+    // if (retVal != E_NO_ERROR) {
+    //     printf("\nSPI SET WIDTH ERROR: %d\n", retVal);
+    //     return retVal;
+    // }
+    //print_GPIO();
+#if MASTERSYNC
+        MXC_SPI_MasterTransaction(&req);
+#endif
+
+#if MASTERASYNC
+        NVIC_EnableIRQ(SPI_IRQ);
+        MXC_SPI_MasterTransactionAsync(&req);
+
+        while (SPI_FLAG == 1) {}
+
+#endif
+
+#if MASTERDMA
+    MXC_DMA_ReleaseChannel(0);
+    MXC_DMA_ReleaseChannel(1);
+
+    // NVIC_EnableIRQ(DMA0_IRQn);
+    // NVIC_EnableIRQ(DMA1_IRQn);
+    MXC_SPI_MasterTransactionDMA(&req);
+
+    while (DMA_FLAG == 0) {}
+
+    DMA_FLAG = 0;
+#endif
+     return retVal;
+}
+
+
+
 
 int main(void)
+{
+    int retVal;
+    //uint16_t temp;
+    mxc_spi_req_t req;
+    mxc_spi_pins_t spi_pins;
+    printf("\n**************************** SPI MASTER with AD4696 *************************\n");
+    printf("[x] Compiled: %s, %s\n",__DATE__,__TIME__);
+    print_GPIO();
+    printf("set up RESET and CNV pins\n");
+    debug_Init();
+    print_GPIO();
+#ifdef BOARD_EVKIT_V1
+    printf("not supported\n");
+    return 0;
+#else
+    printf("MAX78000 feather board connection to AD4696.\n\n");
+#endif
+
+/*
+    spi_pins.clock = TRUE;
+    spi_pins.miso = TRUE;
+    spi_pins.mosi = TRUE;
+    spi_pins.sdio2 = FALSE;
+    spi_pins.sdio3 = FALSE;
+    spi_pins.ss0 = TRUE;
+    spi_pins.ss1 = TRUE;
+    spi_pins.ss2 = FALSE;
+
+    spi_pins.vddioh = FALSE;
+#if MASTERSYNC
+    printf("Performing blocking (synchronous) transactions...\n");
+#endif
+#if MASTERASYNC
+    printf("Performing non-blocking (asynchronous) transactions...\n");
+    MXC_NVIC_SetVector(SPI_IRQ, SPI_IRQHandler);
+#endif
+#if MASTERDMA
+    printf("Performing transactions with DMA...\n");
+#endif
+    printf("releasing nRESET\n");
+    //MXC_GPIO_OutSet(MXC_GPIO1, MXC_GPIO_PIN_1);
+    AD4696_GO();
+    // Configure the peripheral
+    retVal = MXC_SPI_Init(SPI, 1, 0, 1, 0, SPI_SPEED, spi_pins);
+    if (retVal != E_NO_ERROR) {
+        printf("\nSPI INITIALIZATION ERROR\n");
+        return retVal;
+    }
+*/
+    AD4696_GO();
+    MAX78000_SPI_Config();
+    AD4696_READ(VENDOR_H);
+    AD4696_READ(VENDOR_L);
+    AD4696_READ(DEVICE_TYPE);
+//     //tx_data[0] = 0xabcd;
+//     //tx_data[1] = 0x1234;
+//     //tx_data[2] = 0x6789;
+//     tx_data_8[0] = (VENDOR_H & 0xFF00 )>>8;//0x80;
+//     tx_data_8[1] = (VENDOR_H & 0x00FF )>>0;//0x0C;
+//     tx_data_8[2] = 0x00;
+//     req.spi = SPI;
+//     //req.txData = (uint8_t *)tx_data;
+//     //req.rxData = (uint8_t *)rx_data;
+//     req.txData = (uint8_t *)tx_data_8;
+//     req.rxData = (uint8_t *)rx_data_8;
+//     req.txLen = 3;
+//     req.rxLen = 3;
+//     req.ssIdx = 1;
+//     req.ssDeassert = 1;
+//     req.txCnt = 0;
+//     req.rxCnt = 0;
+//     req.completeCB = (spi_complete_cb_t)SPI_Callback;
+//     SPI_FLAG = 1;
+
+//     //retVal = MXC_SPI_SetDataSize(SPI, 16);
+//     retVal = MXC_SPI_SetDataSize(SPI, 8);
+
+//     if (retVal != E_NO_ERROR) {
+//         printf("\nSPI SET DATASIZE ERROR: %d\n", retVal);
+//         return retVal;
+//     }
+
+//     retVal = MXC_SPI_SetWidth(SPI, SPI_WIDTH_STANDARD);
+
+//     if (retVal != E_NO_ERROR) {
+//         printf("\nSPI SET WIDTH ERROR: %d\n", retVal);
+//         return retVal;
+//     }
+//     print_GPIO();
+// #if MASTERSYNC
+//         MXC_SPI_MasterTransaction(&req);
+// #endif
+
+// #if MASTERASYNC
+//         NVIC_EnableIRQ(SPI_IRQ);
+//         MXC_SPI_MasterTransactionAsync(&req);
+
+//         while (SPI_FLAG == 1) {}
+
+// #endif
+
+// #if MASTERDMA
+//     MXC_DMA_ReleaseChannel(0);
+//     MXC_DMA_ReleaseChannel(1);
+
+//     NVIC_EnableIRQ(DMA0_IRQn);
+//     NVIC_EnableIRQ(DMA1_IRQn);
+//     MXC_SPI_MasterTransactionDMA(&req);
+
+//     while (DMA_FLAG == 0) {}
+
+//     DMA_FLAG = 0;
+// #endif
+
+    // tx_data[0] = 0xdead;
+    // tx_data[1] = 0xbeef;
+    // tx_data[2] = 0x1354;
+    tx_data_8[0] = 0x80;
+    tx_data_8[1] = 0x0D;
+    tx_data_8[2] = 0x00;
+    // req.txData = (uint8_t *)tx_data;
+    // req.rxData = (uint8_t *)rx_data;
+    req.txData = (uint8_t *)tx_data_8;
+    req.rxData = (uint8_t *)rx_data_8;
+    req.txLen = 3;
+    req.rxLen = 3;
+
+#if MASTERSYNC
+        MXC_SPI_MasterTransaction(&req);
+#endif
+
+#if MASTERASYNC
+        NVIC_EnableIRQ(SPI_IRQ);
+        MXC_SPI_MasterTransactionAsync(&req);
+
+        while (SPI_FLAG == 1) {}
+#endif
+
+ 
+#if MASTERDMA
+    MXC_DMA_ReleaseChannel(0);
+    MXC_DMA_ReleaseChannel(1);
+
+    // NVIC_EnableIRQ(DMA0_IRQn);
+    // NVIC_EnableIRQ(DMA1_IRQn);
+    MXC_SPI_MasterTransactionDMA(&req);
+
+    while (DMA_FLAG == 0) {}
+
+    DMA_FLAG = 0;
+#endif
+    AD4696_RESET();
+    //MXC_GPIO_OutClr(MXC_GPIO1, MXC_GPIO_PIN_1);
+    printf("\nExample Complete.\n");
+    return E_NO_ERROR;
+}
+
+
+#if 0
+int main1(void)
 {
     int i, j, retVal;
     uint16_t temp;
@@ -133,8 +488,10 @@ int main(void)
     spi_pins.sdio2 = FALSE;
     spi_pins.sdio3 = FALSE;
     spi_pins.ss0 = TRUE;
-    spi_pins.ss1 = FALSE;
+    spi_pins.ss1 = TRUE;
     spi_pins.ss2 = FALSE;
+
+    spi_pins.vddioh = FALSE;
 
 #if MASTERSYNC
     printf("Performing blocking (synchronous) transactions...\n");
@@ -175,7 +532,7 @@ int main(void)
         req.rxData = (uint8_t *)rx_data;
         req.txLen = DATA_LEN;
         req.rxLen = DATA_LEN;
-        req.ssIdx = 0;
+        req.ssIdx = 1;
         req.ssDeassert = 1;
         req.txCnt = 0;
         req.rxCnt = 0;
@@ -219,6 +576,13 @@ int main(void)
         while (DMA_FLAG == 0) {}
 
         DMA_FLAG = 0;
+
+
+        MXC_SPI_MasterTransactionDMA(&req);
+
+        while (DMA_FLAG == 0) {}
+
+        DMA_FLAG = 0;
 #endif
 
         uint8_t bits = MXC_SPI_GetDataSize(SPI);
@@ -244,8 +608,8 @@ int main(void)
             }
         }
 
-        // Compare Sent data vs Received data
-        // Printf needs the Uart turned on since they share the same pins
+        Compare Sent data vs Received data
+        Printf needs the Uart turned on since they share the same pins
         if (memcmp(rx_data, tx_data, sizeof(tx_data)) != 0) {
             printf("\n-->%2d Bits Transaction Failed\n", i);
             return E_COMM_ERR;
@@ -261,6 +625,76 @@ int main(void)
         }
     }
 
+        // Configure the peripheral
+        retVal = MXC_SPI_Init(SPI, 1, 0, 1, 0, SPI_SPEED, spi_pins);
+        if (retVal != E_NO_ERROR) {
+            printf("\nSPI INITIALIZATION ERROR\n");
+            return retVal;
+        }
+
+        tx_data[0] = 0xabcd;
+        tx_data[1] = 0x1234;
+        tx_data[2] = 0x6789;
+        req.spi = SPI;
+        req.txData = (uint8_t *)tx_data;
+        req.rxData = (uint8_t *)rx_data;
+        req.txLen = 3;
+        req.rxLen = 3;
+        req.ssIdx = 1;
+        req.ssDeassert = 1;
+        req.txCnt = 0;
+        req.rxCnt = 0;
+        req.completeCB = (spi_complete_cb_t)SPI_Callback;
+        SPI_FLAG = 1;
+
+        retVal = MXC_SPI_SetDataSize(SPI, 16);
+
+        if (retVal != E_NO_ERROR) {
+            printf("\nSPI SET DATASIZE ERROR: %d\n", retVal);
+            return retVal;
+        }
+
+        retVal = MXC_SPI_SetWidth(SPI, SPI_WIDTH_STANDARD);
+
+        if (retVal != E_NO_ERROR) {
+            printf("\nSPI SET WIDTH ERROR: %d\n", retVal);
+            return retVal;
+        }
+        MXC_DMA_ReleaseChannel(0);
+        MXC_DMA_ReleaseChannel(1);
+
+        NVIC_EnableIRQ(DMA0_IRQn);
+        NVIC_EnableIRQ(DMA1_IRQn);
+        MXC_SPI_MasterTransactionDMA(&req);
+
+        while (DMA_FLAG == 0) {}
+
+        DMA_FLAG = 0;
+
+        tx_data[0] = 0xdead;
+        tx_data[1] = 0xbeef;
+        tx_data[2] = 0x1354;
+        req.txData = (uint8_t *)tx_data;
+        req.rxData = (uint8_t *)rx_data;
+        req.txLen = 3;
+        req.rxLen = 3;
+
+        MXC_DMA_ReleaseChannel(0);
+        MXC_DMA_ReleaseChannel(1);
+
+        // NVIC_EnableIRQ(DMA0_IRQn);
+        // NVIC_EnableIRQ(DMA1_IRQn);
+        MXC_SPI_MasterTransactionDMA(&req);
+
+        while (DMA_FLAG == 0) {}
+
+        DMA_FLAG = 0;
+
+
+
     printf("\nExample Complete.\n");
     return E_NO_ERROR;
 }
+
+#endif
+

@@ -73,6 +73,7 @@
     ],
     "C_Cpp.default.forcedInclude": [
         "${workspaceFolder}/build/project_defines.h"
-    ]
+    ],
+    "cmake.configureOnOpen": true
 }
 
