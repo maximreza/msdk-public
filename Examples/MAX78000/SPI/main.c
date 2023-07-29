@@ -142,12 +142,14 @@ typedef struct {
     __IO uint8_t  gp_mode;            /**< <tt>\b 0x3C:</tt> GPIO_REVA INTEN_CLR Register */
     __IO uint8_t  gpio_state;            /**< <tt>\b 0x3C:</tt> GPIO_REVA INTEN_CLR Register */
     __IO uint8_t  temp_ctrl;            /**< <tt>\b 0x3C:</tt> GPIO_REVA INTEN_CLR Register */
+    __R  uint8_t  rsv_0x002a_0x002f[6];
     __IO uint8_t  config_in_n[16];            /**< <tt>\b 0x10:</tt> GPIO_REVA OUTEN_SET Register */
     __IO uint16_t upper_in_n[16];            /**< <tt>\b 0x10:</tt> GPIO_REVA OUTEN_SET Register */
     __IO uint16_t lower_in_n[16];            /**< <tt>\b 0x10:</tt> GPIO_REVA OUTEN_SET Register */
     __IO uint16_t hyst_in_n[16];            /**< <tt>\b 0x10:</tt> GPIO_REVA OUTEN_SET Register */
     __IO uint16_t offset_in_n[16];            /**< <tt>\b 0x10:</tt> GPIO_REVA OUTEN_SET Register */
     __IO uint16_t gain_in_n[16];            /**< <tt>\b 0x10:</tt> GPIO_REVA OUTEN_SET Register */
+    __R  uint8_t  rsv_0x00e0_0x00ff[32];
     __IO uint8_t  as_slot_n[128];            /**< <tt>\b 0x10:</tt> GPIO_REVA OUTEN_SET Register */
 } ad4696_regs_t;
 
@@ -428,6 +430,7 @@ int AD4696_READ_all(ad4696_regs_t *value)
     value->spi_config_c = 0x33;
        printf("here it is: %02x\n", value->spi_config_a);
     printf("here it is: %02x\n", value->spi_config_c);
+    printf("here it is (.): %02x\n", &(value->spi_config_c));
     printf("here it is: %04x\n", value->gain_in_n[3]);
     //printf("here is value: %08x\n", value[1]);
     return 0;
@@ -496,7 +499,7 @@ int main(void)
     debug_Init();
     //print_GPIO();
 #ifdef BOARD_EVKIT_V1
-    printf("not supported\n");
+    printf("evkit is not supported\n");
     return 0;
 #else
     printf("MAX78000 feather board connection to AD4696.\n\n");
@@ -550,6 +553,9 @@ int main(void)
     AD4696_READ_Loop(LOOP_MODE,15);
     AD4696_READ(STATUS);
     AD4696_READ_all(&ad_4696_regs);
+    printf("print &ad_4696_regs %08x\n", sizeof(ad_4696_regs.config_in_n[3]));
+    printf("in the main %04x\n", ad_4696_regs.spi_config_c);
+        printf("in the main(->) %04x\n", (uint8_t*)(&(ad_4696_regs.as_slot_n[127]))-&ad_4696_regs.spi_config_a);
 
 #if 0
 //     //tx_data[0] = 0xabcd;
