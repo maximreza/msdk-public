@@ -55,9 +55,9 @@
 #include "gpio.h"
 
 /***** Preprocessors *****/
-#define MASTERSYNC 0
+#define MASTERSYNC 1
 #define MASTERASYNC 0
-#define MASTERDMA 1
+#define MASTERDMA 0
 
 #if (!(MASTERSYNC || MASTERASYNC || MASTERDMA))
 #error "You must set either MASTERSYNC or MASTERASYNC or MASTERDMA to 1."
@@ -70,7 +70,7 @@
 #define DATA_LEN 1000 // Words
 #define DATA_VALUE 0xA5A5 // This is for master mode only...
 #define VALUE 0xFFFF
-#define SPI_SPEED 100000 // Bit Rate
+#define SPI_SPEED 10000000 // Bit Rate
 
 #ifdef BOARD_EVKIT_V1
 #define SPI_INSTANCE_NUM 0
@@ -108,6 +108,19 @@ volatile uint8_t DMA_FLAG = 0;
 #define SPI_STATUS      0x0011
 #define STATUS          0x0014
 
+
+#define SETUP           0x0020
+#define REF_CTRL        0x0021
+#define SEQ_CTRL        0x0022
+#define AC_CTRL         0x0023
+#define STD_SEQ_CONFIG  0x0024
+
+#define GPIO_CTRL       0x0026
+#define GP_MODE         0x0027
+#define GPIO_STATE      0x0028
+
+
+//TODO fix register descriptions
 typedef struct {
     __IO uint8_t  spi_config_a;                  /**< <tt>\b 0x00:</tt> GPIO_REVA EN0 Register */
     __IO uint8_t  spi_config_b;              /**< <tt>\b 0x04:</tt> GPIO_REVA EN0_SET Register */
@@ -153,6 +166,7 @@ typedef struct {
     __IO uint8_t  as_slot_n[128];            /**< <tt>\b 0x10:</tt> GPIO_REVA OUTEN_SET Register */
 } ad4696_regs_t;
 
+ad4696_regs_t ad_4696_regs;
 ////
 /***** Functions *****/
 void print_GPIO(void){
@@ -199,21 +213,21 @@ void SPI_Callback(mxc_spi_req_t *req, int error)
     SPI_FLAG = error;
 }
 // configure AD4696 nRESET (p1.1), CNV(p1.6) and GPIO (p0.19)
-const mxc_gpio_cfg_t debug_pin[] = {
+const mxc_gpio_cfg_t ad4696_pins[] = {
     { MXC_GPIO1, MXC_GPIO_PIN_6, MXC_GPIO_FUNC_OUT, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO }, //CNV
     { MXC_GPIO1, MXC_GPIO_PIN_1, MXC_GPIO_FUNC_OUT, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO },  //nRESET
-    //TODO: p0.19
+    { MXC_GPIO0, MXC_GPIO_PIN_19, MXC_GPIO_FUNC_IN, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO }, //p0.19
 };
-const unsigned int num_debugs = (sizeof(debug_pin) / sizeof(mxc_gpio_cfg_t));
+const unsigned int ad4696_num_gpios = (sizeof(ad4696_pins) / sizeof(mxc_gpio_cfg_t));
 
-int debug_Init(void)
+int ad4696_pins_Init(void)
 {
     int retval = E_NO_ERROR;
     unsigned int i;
 
     /* setup 2 GPIOs for the debug */
-    for (i = 0; i < num_debugs; i++) {
-        if (MXC_GPIO_Config(&debug_pin[i]) != E_NO_ERROR) {
+    for (i = 0; i < ad4696_num_gpios; i++) {
+        if (MXC_GPIO_Config(&ad4696_pins[i]) != E_NO_ERROR) {
             retval = E_UNKNOWN;
         }
     }
@@ -236,6 +250,7 @@ int MAX78000_SPI_Config(void) {
     spi_pins.ss1 = TRUE;
     spi_pins.ss2 = FALSE;
     spi_pins.vddioh = FALSE;
+
 
     req.ssIdx = 1;
     req.ssDeassert = 1;
@@ -278,7 +293,12 @@ int MAX78000_SPI_Config(void) {
         printf("\nSPI SET WIDTH ERROR: %d\n", retVal);
         return retVal;
     }
-
+    // AD4696 operates in SPI mode 3
+    retVal = MXC_SPI_SetMode(SPI, SPI_MODE_3);
+    if (retVal != E_NO_ERROR) {
+        printf("\nSPI SET WIDTH ERROR: %d\n", retVal);
+        return retVal;
+    }
     return 0;
 }
 
@@ -306,6 +326,7 @@ int AD4696_READ(uint16_t addr) {
     req.rxData = (uint8_t *)rx_data_8;
     req.txLen = 3;
     req.rxLen = 3;
+#if 0
     // req.ssIdx = 1;
     // req.ssDeassert = 1;
     // req.txCnt = 0;
@@ -328,6 +349,79 @@ int AD4696_READ(uint16_t addr) {
     //     return retVal;
     // }
     //print_GPIO();
+#endif
+#if MASTERSYNC
+        retVal = MXC_SPI_MasterTransaction(&req);
+#endif
+
+#if MASTERASYNC
+        NVIC_EnableIRQ(SPI_IRQ);
+        MXC_SPI_MasterTransactionAsync(&req);
+
+        while (SPI_FLAG == 1) {}
+
+#endif
+
+#if MASTERDMA
+    MXC_DMA_ReleaseChannel(0);
+    MXC_DMA_ReleaseChannel(1);
+
+    // NVIC_EnableIRQ(DMA0_IRQn);
+    // NVIC_EnableIRQ(DMA1_IRQn);
+    retVal = MXC_SPI_MasterTransactionDMA(&req);
+
+    while (DMA_FLAG == 0) {}
+
+    DMA_FLAG = 0;
+#endif
+     return retVal;
+}
+#if 0
+int AD4696_READ1(ad4696_regs_t *regs) {
+
+    
+    int retVal, addr;
+    //mxc_spi_req_t req;
+    printf("here is the value from read1 function %04x\n",*value);
+    printf("here is the size of value from read1 function %04x\n",sizeof(*value));
+    printf("here is the value addr from read1 function %04x\n", (uint8_t*)(&(value)));
+    printf("here is the base  addr from read1 function %04x\n", &(ad_4696_regs.spi_config_a));
+    printf("here is the diff addr from read1 function %04x\n", (uint8_t*)((value))-&(ad_4696_regs.spi_config_a));
+    return 0;
+    tx_data_8[0] = ((addr + 0x8000) & 0xFF00 )>>8;//0x80;
+    tx_data_8[1] = (addr & 0x00FF )>>0;//0x0C;
+    tx_data_8[2] = 0x00;
+    req.spi = SPI;
+    //req.txData = (uint8_t *)tx_data;
+    //req.rxData = (uint8_t *)rx_data;
+    req.txData = (uint8_t *)tx_data_8;
+    req.rxData = (uint8_t *)rx_data_8;
+    req.txLen = 3;
+    req.rxLen = 3;
+#if 0
+    // req.ssIdx = 1;
+    // req.ssDeassert = 1;
+    // req.txCnt = 0;
+    // req.rxCnt = 0;
+    // req.completeCB = (spi_complete_cb_t)SPI_Callback;
+    // SPI_FLAG = 1;
+
+    //retVal = MXC_SPI_SetDataSize(SPI, 16);
+    // retVal = MXC_SPI_SetDataSize(SPI, 8);
+
+    // if (retVal != E_NO_ERROR) {
+    //     printf("\nSPI SET DATASIZE ERROR: %d\n", retVal);
+    //     return retVal;
+    // }
+
+    // retVal = MXC_SPI_SetWidth(SPI, SPI_WIDTH_STANDARD);
+
+    // if (retVal != E_NO_ERROR) {
+    //     printf("\nSPI SET WIDTH ERROR: %d\n", retVal);
+    //     return retVal;
+    // }
+    //print_GPIO();
+#endif
 #if MASTERSYNC
         MXC_SPI_MasterTransaction(&req);
 #endif
@@ -354,7 +448,7 @@ int AD4696_READ(uint16_t addr) {
 #endif
      return retVal;
 }
-
+#endif
 int AD4696_WRITE(uint16_t addr, uint8_t value) {
     
     int retVal;
@@ -393,7 +487,7 @@ int AD4696_WRITE(uint16_t addr, uint8_t value) {
     // }
     //print_GPIO();
 #if MASTERSYNC
-        MXC_SPI_MasterTransaction(&req);
+        retVal = MXC_SPI_MasterTransaction(&req);
 #endif
 
 #if MASTERASYNC
@@ -422,17 +516,27 @@ int AD4696_WRITE(uint16_t addr, uint8_t value) {
 int AD4696_READ_all(ad4696_regs_t *value)
 {
     value->spi_config_a = 0x43;
+    value->spi_config_b = 0xeb;
     value->spi_config_c = 0xf3;
     value->gain_in_n[3] = 0xbeef;
+    value->std_seq_config = 0xdeed;
+    value->gpio_ctrl = 0x99;
     printf("here it is: %02x\n", value->spi_config_a);
     printf("here it is: %02x\n", value->spi_config_c);
     printf("here it is: %04x\n", value->gain_in_n[3]);
     value->spi_config_c = 0x33;
-       printf("here it is: %02x\n", value->spi_config_a);
+    printf("here it is: %02x\n", value->spi_config_a);
     printf("here it is: %02x\n", value->spi_config_c);
     printf("here it is (.): %02x\n", &(value->spi_config_c));
     printf("here it is: %04x\n", value->gain_in_n[3]);
     //printf("here is value: %08x\n", value[1]);
+
+    printf("here is the value from read1 function %04x\n", *((uint8_t*)(value)+0x26));
+    printf("here is the config b addr from read1 function %04x\n", &(value->spi_config_b));
+    printf("here is the size of value from read1 function %04x\n",sizeof((value[0])));
+    printf("here is the value addr from read1 function %04x\n", (uint8_t*)((value)));
+    printf("here is the base  addr from read1 function %04x\n", &(value->spi_config_a));
+    printf("here is the diff addr from read1 function %04x\n", (uint8_t*)((value))-&(value->spi_config_a));
     return 0;
 }
 
@@ -454,7 +558,7 @@ int AD4696_READ_Loop(uint16_t init_addr, uint8_t NumReg) {
     req.txLen = 2 + NumReg;
     req.rxLen = 2 + NumReg;
 #if MASTERSYNC
-        MXC_SPI_MasterTransaction(&req);
+        retVal = MXC_SPI_MasterTransaction(&req);
 #endif
 
 #if MASTERASYNC
@@ -483,20 +587,69 @@ int AD4696_READ_Loop(uint16_t init_addr, uint8_t NumReg) {
 
 }
 
+int AD4696_command_convert(uint8_t value,uint8_t len) {
 
+    int retVal;
+    //mxc_spi_req_t req;
+
+    tx_data_8[0] = value>>1;
+    tx_data_8[1] = 0x00;
+    tx_data_8[2] = 0x00;
+
+
+    req.spi = SPI;
+    //req.txData = (uint8_t *)tx_data;
+    //req.rxData = (uint8_t *)rx_data;
+    //req.txData = (uint8_t *)tx_data_8;
+    req.rxData = (uint8_t *)rx_data_8;
+    req.txData = (uint8_t *)tx_data_8;
+    req.txLen = len+2;
+    req.rxLen = len+2;
+#if MASTERSYNC
+        while ((MXC_GPIO_InGet(MXC_GPIO0, MXC_GPIO_PIN_19)) == 0);
+        while ((MXC_GPIO_InGet(MXC_GPIO0, MXC_GPIO_PIN_19)) == (1<<19));
+        retVal= MXC_SPI_MasterTransaction(&req);
+#endif
+
+#if MASTERASYNC
+        NVIC_EnableIRQ(SPI_IRQ);
+        MXC_SPI_MasterTransactionAsync(&req);
+
+        while (SPI_FLAG == 1) {}
+
+#endif
+
+#if MASTERDMA
+    MXC_DMA_ReleaseChannel(0);
+    MXC_DMA_ReleaseChannel(1);
+
+    // NVIC_EnableIRQ(DMA0_IRQn);
+    // NVIC_EnableIRQ(DMA1_IRQn);
+    //while ((MXC_GPIO_InGet(MXC_GPIO0, MXC_GPIO_PIN_19)) == 0);
+    //while ((MXC_GPIO_InGet(MXC_GPIO0, MXC_GPIO_PIN_19)) == (1<<19));
+    //while ((MXC_GPIO_InGet(MXC_GPIO0, MXC_GPIO_PIN_19)) == 0);
+    retVal = MXC_SPI_MasterTransactionDMA(&req);
+
+    while (DMA_FLAG == 0) {}
+
+    DMA_FLAG = 0;
+#endif
+    //MXC_Delay(160);
+    return retVal;
+}
 int main(void)
 {
     //int retVal;
     //uint16_t temp;
     //mxc_spi_req_t req;
     //mxc_spi_pins_t spi_pins;
-    ad4696_regs_t ad_4696_regs;
+    //ad4696_regs_t ad_4696_regs;
 
     printf("\n**************************** SPI MASTER with AD4696 *************************\n");
     printf("[x] Compiled: %s, %s\n",__DATE__,__TIME__);
     //print_GPIO();
     printf("set up RESET and CNV pins\n");
-    debug_Init();
+    ad4696_pins_Init();
     //print_GPIO();
 #ifdef BOARD_EVKIT_V1
     printf("evkit is not supported\n");
@@ -538,25 +691,49 @@ int main(void)
 */
     AD4696_GO();
     MAX78000_SPI_Config();
+//ss time hack 
+//TODO should add a function in SDK
+*((volatile uint32_t *) 0x400BE010) = 0x00010101;
+
     AD4696_READ(VENDOR_H);
     //printf("read value: %02x\n",rx_data_8[2]);
     AD4696_READ(VENDOR_L);
     AD4696_READ(DEVICE_TYPE);
     AD4696_WRITE(SCRATCH_PAD, 0x73);
     AD4696_READ(SCRATCH_PAD);
-    AD4696_READ(VENDOR_H);
-    AD4696_READ(VENDOR_L);
-    AD4696_READ(DEVICE_TYPE);
-    AD4696_READ(SCRATCH_PAD);
+    // AD4696_READ(VENDOR_H);
+    // AD4696_READ(VENDOR_L);
+    // AD4696_READ(DEVICE_TYPE);
+    // AD4696_READ(SCRATCH_PAD);
+    // AD4696_READ(SPI_STATUS);
+    // AD4696_READ(STATUS);
+    // AD4696_READ_Loop(LOOP_MODE,15);
+    // AD4696_READ(STATUS);
+    // AD4696_READ_all(&ad_4696_regs);
+    // printf("print &ad_4696_regs %08x\n", sizeof(ad_4696_regs.config_in_n[3]));
+    // printf("in the main %04x\n", ad_4696_regs.spi_config_c);
+    // printf("in the main(->) %04x\n", (uint8_t*)(&(ad_4696_regs.as_slot_n[127]))-&ad_4696_regs.spi_config_a);
+    // //AD4696_READ1(&ad_4696_regs.std_seq_config);
     AD4696_READ(SPI_STATUS);
     AD4696_READ(STATUS);
-    AD4696_READ_Loop(LOOP_MODE,15);
+    AD4696_WRITE(GPIO_CTRL, 0x1); //GPIO output
+    AD4696_WRITE(GP_MODE, 0x2);    // GPIO busy
+    AD4696_WRITE(AC_CTRL, (0x1<<1)+1); //
+    AD4696_WRITE(SETUP, 0x14); // 
+    //MXC_Delay(12);
+    //while(1);
+    AD4696_command_convert(0x00,1);
+    AD4696_command_convert(0x00,1);
+    AD4696_command_convert(0x00,1);
+    AD4696_command_convert(0x00,1);
+    AD4696_command_convert(0x00,1);
+    AD4696_command_convert(0x00,1);
+    AD4696_command_convert(0x00,1);
+    AD4696_command_convert(0xA0,1);
+    AD4696_READ(SPI_STATUS);
     AD4696_READ(STATUS);
-    AD4696_READ_all(&ad_4696_regs);
-    printf("print &ad_4696_regs %08x\n", sizeof(ad_4696_regs.config_in_n[3]));
-    printf("in the main %04x\n", ad_4696_regs.spi_config_c);
-        printf("in the main(->) %04x\n", (uint8_t*)(&(ad_4696_regs.as_slot_n[127]))-&ad_4696_regs.spi_config_a);
-
+    printf("Status register %08x",rx_data_8[2]);
+    AD4696_READ(SCRATCH_PAD);
 #if 0
 //     //tx_data[0] = 0xabcd;
 //     //tx_data[1] = 0x1234;
