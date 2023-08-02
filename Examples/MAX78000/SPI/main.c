@@ -50,11 +50,13 @@
 #include "mxc_delay.h"
 #include "mxc_pins.h"
 #include "nvic_table.h"
+#include "icc.h"
 #include "spi.h"
 #include "uart.h"
 #include "gpio.h"
+#include "led.h"
 
-/***** Preprocessors *****/
+/***** Pre-processors *****/
 #define MASTERSYNC 1
 #define MASTERASYNC 0
 #define MASTERDMA 0
@@ -89,9 +91,12 @@ uint8_t rx_data_8[DATA_LEN];
 uint8_t tx_data_8[DATA_LEN];
 mxc_spi_req_t req;
 mxc_spi_pins_t spi_pins;
+//mxc_spi_regs_t* spi;
+int ssel = 1;
 
 volatile int SPI_FLAG;
 volatile uint8_t DMA_FLAG = 0;
+volatile uint32_t GPIO_FLAG = 0;
 //// ADI AD4696 register addresses
 
 #define SPI_CONFIG_A    0x0000
@@ -119,7 +124,8 @@ volatile uint8_t DMA_FLAG = 0;
 #define GP_MODE         0x0027
 #define GPIO_STATE      0x0028
 
-
+int AD4696_command_convert(uint8_t value,uint8_t len);
+void print_SPI(void); 
 //TODO fix register descriptions
 typedef struct {
     __IO uint8_t  spi_config_a;                  /**< <tt>\b 0x00:</tt> GPIO_REVA EN0 Register */
@@ -169,6 +175,107 @@ typedef struct {
 ad4696_regs_t ad_4696_regs;
 ////
 /***** Functions *****/
+
+
+static void spi_transmit(void* datain, unsigned int count)
+{
+    unsigned int            offset;
+    unsigned int            fifo;
+    volatile uint8_t* u8ptrin = (volatile uint8_t*) datain;
+    unsigned int             start = 0;
+
+    // HW requires disabling/re-enabling SPI block at end of each transaction (when SS is inactive).
+    SPI->ctrl0 &= ~(MXC_F_SPI_CTRL0_EN);
+
+    // Setup the slave select
+    //MXC_SETFIELD(spi->ctrl0, MXC_F_SPI_CTRL0_SS_ACTIVE, ((1 << ssel) << MXC_F_SPI_CTRL0_SS_ACTIVE_POS));
+
+    // number of RX Char is 0xffff
+    SPI->ctrl1 &= ~(MXC_F_SPI_CTRL1_RX_NUM_CHAR);
+
+    //DMA RX FIFO disabled
+    SPI->dma &= ~(MXC_F_SPI_DMA_RX_FIFO_EN);
+
+    // set number of char to be transmit
+    MXC_SETFIELD(SPI->ctrl1, MXC_F_SPI_CTRL1_TX_NUM_CHAR, count << MXC_F_SPI_CTRL1_TX_NUM_CHAR_POS);
+    // DMA TX fifo enable
+    SPI->dma |= MXC_F_SPI_DMA_TX_FIFO_EN;
+
+    /* Clear TX and RX FIFO in DMA
+        TX: Set this bit to clear the TX FIFO and all TX FIFO flags in the QSPIn_INT_FL register.
+            Note: The TX FIFO should be disabled (QSPIn_DMA.tx_fifo_en = 0) prior to setting this field.
+            Note: Setting this field to 0 has no effect.
+        RX: Clear the RX FIFO and any pending RX FIFO flags in QSPIn_INTFL.
+            This should be done when the RX FIFO is inactive.
+    */
+    SPI->dma   |= (MXC_F_SPI_DMA_TX_FLUSH | MXC_F_SPI_DMA_RX_FLUSH);
+    // QSPIn port is enabled
+    SPI->ctrl0 |= (MXC_F_SPI_CTRL0_EN);
+
+    // Clear master done flag
+    SPI->intfl = MXC_F_SPI_INTFL_MST_DONE;
+
+    /* Loop until all data is transmitted */
+    offset = 0;
+
+    do {
+        fifo = (count > 8) ? 8 : count;
+        count -= fifo;
+
+        while (fifo > 0) {
+            /* Send data */
+            SPI->fifo8[0] = u8ptrin[offset];
+            offset++;
+            fifo--;
+        }
+
+        /*
+            Master Start Data Transmission
+                Set this field to 1 to start a SPI master mode transaction.
+                0: No master mode transaction active.
+                1: Master initiates a data transmission. Ensure that all pending transactions are
+                complete before setting this field to 1.
+                Note: This field is only used when the QSPIn is configured for Master Mode
+                (QSPIn_CTRL0.master = 1).
+        */
+        if (start == 0) {
+            SPI->ctrl0 |= MXC_F_SPI_CTRL0_START;
+            start = 1;
+        }
+
+        /* Wait for data transmitting complete and then De-asserts nSS I/O */
+        // Deassert slave select at the end of the transaction
+        SPI->ctrl0 &= ~MXC_F_SPI_CTRL0_SS_CTRL;
+    }
+    while (count);
+
+    while (!(SPI->intfl & MXC_F_SPI_INTFL_MST_DONE)) {
+        // wait until done
+    }
+    return;
+}
+
+
+void GPIO_IRQHandler(void) 
+{
+    //MXC_GPIO_OutSet(MXC_GPIO3,MXC_GPIO_PIN_1);
+
+    if (GPIO_FLAG <30020) {
+        //LED_On(LED_GREEN);
+
+        AD4696_command_convert(0x00,1);
+        //MXC_GPIO_OutClr(MXC_GPIO3,MXC_GPIO_PIN_1);
+        //LED_Off(LED_GREEN);
+    }
+    else {
+        AD4696_command_convert(0xA0,1);
+        NVIC_DisableIRQ(MXC_GPIO_GET_IRQ(MXC_GPIO_GET_IDX(MXC_GPIO0)));
+    }
+    MXC_GPIO_Handler(MXC_GPIO_PORT_0);
+    //MXC_GPIO_OutClr(MXC_GPIO3,MXC_GPIO_PIN_1);
+    GPIO_FLAG ++;
+}
+
 void print_GPIO(void){
 	printf("\n***** GPIO REGISTERS *****\n");
 	//format
@@ -191,6 +298,26 @@ void print_GPIO(void){
 
 }
 
+void print_SPI(void){
+	printf("\n***** SPI REGISTERS *****\n");
+	//format
+	// 	printf("0x:%08X\n",     *(  (volatile uint32_t *) <address in hex>  )      );
+	//
+	uint32_t spi_base = 0x400BE000;
+	printf("04 - CTRL0:  %08X\n",*((volatile uint32_t *) (spi_base + 0x04)));
+	printf("08 - CTRL1:  %08X\n",*((volatile uint32_t *) (spi_base + 0x08)));
+	printf("0C - CTRL2:  %08X\n",*((volatile uint32_t *) (spi_base + 0x0C)));
+	printf("10 - SSTIM:  %08X\n",*((volatile uint32_t *) (spi_base + 0x10)));
+	printf("14 - CKCTR:  %08X\n",*((volatile uint32_t *) (spi_base + 0x14)));
+	printf("1C - DMA:    %08X\n",*((volatile uint32_t *) (spi_base + 0x1C)));
+	printf("20 - INTFL:  %08X\n",*((volatile uint32_t *) (spi_base + 0x20)));
+	printf("24 - INTEN:  %08X\n",*((volatile uint32_t *) (spi_base + 0x24)));
+	printf("28 - WKFL:   %08X\n",*((volatile uint32_t *) (spi_base + 0x28)));
+    printf("2C - WKEN:   %08X\n",*((volatile uint32_t *) (spi_base + 0x2C)));
+	printf("30 - STAT:   %08X\n",*((volatile uint32_t *) (spi_base + 0x30)));
+	printf("*************************\n");
+
+}
 
 void SPI_IRQHandler(void)
 {
@@ -225,13 +352,12 @@ int ad4696_pins_Init(void)
     int retval = E_NO_ERROR;
     unsigned int i;
 
-    /* setup 2 GPIOs for the debug */
+    /* setup 3 GPIOs for the adc communications */
     for (i = 0; i < ad4696_num_gpios; i++) {
         if (MXC_GPIO_Config(&ad4696_pins[i]) != E_NO_ERROR) {
             retval = E_UNKNOWN;
         }
     }
-
     return retval;
 }
 
@@ -241,14 +367,14 @@ int MAX78000_SPI_Config(void) {
     // mxc_spi_req_t req;
     // mxc_spi_pins_t spi_pins;
     
-    spi_pins.clock = TRUE;
-    spi_pins.miso = TRUE;
-    spi_pins.mosi = TRUE;
-    spi_pins.sdio2 = FALSE;
-    spi_pins.sdio3 = FALSE;
-    spi_pins.ss0 = TRUE;
-    spi_pins.ss1 = TRUE;
-    spi_pins.ss2 = FALSE;
+    spi_pins.clock  = TRUE;
+    spi_pins.miso   = TRUE;
+    spi_pins.mosi   = TRUE;
+    spi_pins.sdio2  = FALSE;
+    spi_pins.sdio3  = FALSE;
+    spi_pins.ss0    = TRUE;
+    spi_pins.ss1    = TRUE;
+    spi_pins.ss2    = FALSE;
     spi_pins.vddioh = FALSE;
 
 
@@ -302,8 +428,7 @@ int MAX78000_SPI_Config(void) {
     return 0;
 }
 
-
-void AD4696_RESET(void) {
+void AD4696_RESET_HOLD(void) {
     MXC_GPIO_OutClr(MXC_GPIO1, MXC_GPIO_PIN_1);
 }
 
@@ -326,30 +451,7 @@ int AD4696_READ(uint16_t addr) {
     req.rxData = (uint8_t *)rx_data_8;
     req.txLen = 3;
     req.rxLen = 3;
-#if 0
-    // req.ssIdx = 1;
-    // req.ssDeassert = 1;
-    // req.txCnt = 0;
-    // req.rxCnt = 0;
-    // req.completeCB = (spi_complete_cb_t)SPI_Callback;
-    // SPI_FLAG = 1;
 
-    //retVal = MXC_SPI_SetDataSize(SPI, 16);
-    // retVal = MXC_SPI_SetDataSize(SPI, 8);
-
-    // if (retVal != E_NO_ERROR) {
-    //     printf("\nSPI SET DATASIZE ERROR: %d\n", retVal);
-    //     return retVal;
-    // }
-
-    // retVal = MXC_SPI_SetWidth(SPI, SPI_WIDTH_STANDARD);
-
-    // if (retVal != E_NO_ERROR) {
-    //     printf("\nSPI SET WIDTH ERROR: %d\n", retVal);
-    //     return retVal;
-    // }
-    //print_GPIO();
-#endif
 #if MASTERSYNC
         retVal = MXC_SPI_MasterTransaction(&req);
 #endif
@@ -464,27 +566,7 @@ int AD4696_WRITE(uint16_t addr, uint8_t value) {
     req.rxData = (uint8_t *)rx_data_8;
     req.txLen = 3;
     req.rxLen = 3;
-    // req.ssIdx = 1;
-    // req.ssDeassert = 1;
-    // req.txCnt = 0;
-    // req.rxCnt = 0;
-    // req.completeCB = (spi_complete_cb_t)SPI_Callback;
-    // SPI_FLAG = 1;
 
-    //retVal = MXC_SPI_SetDataSize(SPI, 16);
-    // retVal = MXC_SPI_SetDataSize(SPI, 8);
-
-    // if (retVal != E_NO_ERROR) {
-    //     printf("\nSPI SET DATASIZE ERROR: %d\n", retVal);
-    //     return retVal;
-    // }
-
-    // retVal = MXC_SPI_SetWidth(SPI, SPI_WIDTH_STANDARD);
-
-    // if (retVal != E_NO_ERROR) {
-    //     printf("\nSPI SET WIDTH ERROR: %d\n", retVal);
-    //     return retVal;
-    // }
     //print_GPIO();
 #if MASTERSYNC
         retVal = MXC_SPI_MasterTransaction(&req);
@@ -606,9 +688,9 @@ int AD4696_command_convert(uint8_t value,uint8_t len) {
     req.txLen = len+2;
     req.rxLen = len+2;
 #if MASTERSYNC
-        while ((MXC_GPIO_InGet(MXC_GPIO0, MXC_GPIO_PIN_19)) == 0);
-        while ((MXC_GPIO_InGet(MXC_GPIO0, MXC_GPIO_PIN_19)) == (1<<19));
-        retVal= MXC_SPI_MasterTransaction(&req);
+         spi_transmit((uint8_t*)tx_data_8,3);  
+         retVal = 0; 
+        //retVal= MXC_SPI_MasterTransaction(&req);
 #endif
 
 #if MASTERASYNC
@@ -637,6 +719,21 @@ int AD4696_command_convert(uint8_t value,uint8_t len) {
     //MXC_Delay(160);
     return retVal;
 }
+
+void AD4696_busy_config(void) {
+    // mxc_gpio_cfg_t req;
+    // req.mask = MXC_GPIO_PIN_19;
+    //uint32_t* dummy=0;
+    MXC_GPIO_RegisterCallback(&ad4696_pins[2],
+                             (mxc_gpio_callback_fn) GPIO_IRQHandler,
+                             (void*)&ad4696_pins[2]);
+
+    MXC_GPIO_IntConfig(&ad4696_pins[2], MXC_GPIO_INT_FALLING);
+    MXC_GPIO_EnableInt(MXC_GPIO0, MXC_GPIO_PIN_19);
+    //NVIC_EnableIRQ(MXC_GPIO_GET_IRQ(MXC_GPIO_GET_IDX(MXC_GPIO0)));
+}
+
+
 int main(void)
 {
     //int retVal;
@@ -644,7 +741,11 @@ int main(void)
     //mxc_spi_req_t req;
     //mxc_spi_pins_t spi_pins;
     //ad4696_regs_t ad_4696_regs;
+    MXC_ICC_Enable(MXC_ICC0);
 
+    /* Set system clock to 100 MHz */
+    MXC_SYS_Clock_Select(MXC_SYS_CLOCK_IPO);
+    SystemCoreClockUpdate();
     printf("\n**************************** SPI MASTER with AD4696 *************************\n");
     printf("[x] Compiled: %s, %s\n",__DATE__,__TIME__);
     //print_GPIO();
@@ -658,43 +759,12 @@ int main(void)
     printf("MAX78000 feather board connection to AD4696.\n\n");
 #endif
 
-/*
-    spi_pins.clock = TRUE;
-    spi_pins.miso = TRUE;
-    spi_pins.mosi = TRUE;
-    spi_pins.sdio2 = FALSE;
-    spi_pins.sdio3 = FALSE;
-    spi_pins.ss0 = TRUE;
-    spi_pins.ss1 = TRUE;
-    spi_pins.ss2 = FALSE;
 
-    spi_pins.vddioh = FALSE;
-#if MASTERSYNC
-    printf("Performing blocking (synchronous) transactions...\n");
-#endif
-#if MASTERASYNC
-    printf("Performing non-blocking (asynchronous) transactions...\n");
-    MXC_NVIC_SetVector(SPI_IRQ, SPI_IRQHandler);
-#endif
-#if MASTERDMA
-    printf("Performing transactions with DMA...\n");
-#endif
-    printf("releasing nRESET\n");
-    //MXC_GPIO_OutSet(MXC_GPIO1, MXC_GPIO_PIN_1);
-    AD4696_GO();
-    // Configure the peripheral
-    retVal = MXC_SPI_Init(SPI, 1, 0, 1, 0, SPI_SPEED, spi_pins);
-    if (retVal != E_NO_ERROR) {
-        printf("\nSPI INITIALIZATION ERROR\n");
-        return retVal;
-    }
-*/
     AD4696_GO();
     MAX78000_SPI_Config();
-//ss time hack 
-//TODO should add a function in SDK
-*((volatile uint32_t *) 0x400BE010) = 0x00010101;
-
+    print_SPI();
+    AD4696_busy_config();
+    
     AD4696_READ(VENDOR_H);
     //printf("read value: %02x\n",rx_data_8[2]);
     AD4696_READ(VENDOR_L);
@@ -718,123 +788,30 @@ int main(void)
     AD4696_READ(STATUS);
     AD4696_WRITE(GPIO_CTRL, 0x1); //GPIO output
     AD4696_WRITE(GP_MODE, 0x2);    // GPIO busy
-    AD4696_WRITE(AC_CTRL, (0x1<<1)+1); //
+    AD4696_WRITE(AC_CTRL, (0x0<<1)+1); // 0x0<<1 is the fastest
     AD4696_WRITE(SETUP, 0x14); // 
     //MXC_Delay(12);
+    NVIC_EnableIRQ(MXC_GPIO_GET_IRQ(MXC_GPIO_GET_IDX(MXC_GPIO0)));
+    LED_On(LED_GREEN);
+    while(GPIO_FLAG < 30021);
+    LED_Off(LED_GREEN);
     //while(1);
-    AD4696_command_convert(0x00,1);
-    AD4696_command_convert(0x00,1);
-    AD4696_command_convert(0x00,1);
-    AD4696_command_convert(0x00,1);
-    AD4696_command_convert(0x00,1);
-    AD4696_command_convert(0x00,1);
-    AD4696_command_convert(0x00,1);
-    AD4696_command_convert(0xA0,1);
+    // AD4696_command_convert(0x00,1);
+    // AD4696_command_convert(0x00,1);
+    // AD4696_command_convert(0x00,1);
+    // AD4696_command_convert(0x00,1);
+    // AD4696_command_convert(0x00,1);
+    // AD4696_command_convert(0x00,1);
+    // AD4696_command_convert(0x00,1);
+    // AD4696_command_convert(0xA0,1);
     AD4696_READ(SPI_STATUS);
     AD4696_READ(STATUS);
-    printf("Status register %08x",rx_data_8[2]);
+    printf("Status register %08x\n",rx_data_8[2]);
     AD4696_READ(SCRATCH_PAD);
-#if 0
-//     //tx_data[0] = 0xabcd;
-//     //tx_data[1] = 0x1234;
-//     //tx_data[2] = 0x6789;
-//     tx_data_8[0] = (VENDOR_H & 0xFF00 )>>8;//0x80;
-//     tx_data_8[1] = (VENDOR_H & 0x00FF )>>0;//0x0C;
-//     tx_data_8[2] = 0x00;
-//     req.spi = SPI;
-//     //req.txData = (uint8_t *)tx_data;
-//     //req.rxData = (uint8_t *)rx_data;
-//     req.txData = (uint8_t *)tx_data_8;
-//     req.rxData = (uint8_t *)rx_data_8;
-//     req.txLen = 3;
-//     req.rxLen = 3;
-//     req.ssIdx = 1;
-//     req.ssDeassert = 1;
-//     req.txCnt = 0;
-//     req.rxCnt = 0;
-//     req.completeCB = (spi_complete_cb_t)SPI_Callback;
-//     SPI_FLAG = 1;
 
-//     //retVal = MXC_SPI_SetDataSize(SPI, 16);
-//     retVal = MXC_SPI_SetDataSize(SPI, 8);
-
-//     if (retVal != E_NO_ERROR) {
-//         printf("\nSPI SET DATASIZE ERROR: %d\n", retVal);
-//         return retVal;
-//     }
-
-//     retVal = MXC_SPI_SetWidth(SPI, SPI_WIDTH_STANDARD);
-
-//     if (retVal != E_NO_ERROR) {
-//         printf("\nSPI SET WIDTH ERROR: %d\n", retVal);
-//         return retVal;
-//     }
-//     print_GPIO();
-// #if MASTERSYNC
-//         MXC_SPI_MasterTransaction(&req);
-// #endif
-
-// #if MASTERASYNC
-//         NVIC_EnableIRQ(SPI_IRQ);
-//         MXC_SPI_MasterTransactionAsync(&req);
-
-//         while (SPI_FLAG == 1) {}
-
-// #endif
-
-// #if MASTERDMA
-//     MXC_DMA_ReleaseChannel(0);
-//     MXC_DMA_ReleaseChannel(1);
-
-//     NVIC_EnableIRQ(DMA0_IRQn);
-//     NVIC_EnableIRQ(DMA1_IRQn);
-//     MXC_SPI_MasterTransactionDMA(&req);
-
-//     while (DMA_FLAG == 0) {}
-
-//     DMA_FLAG = 0;
-// #endif
-
-    // tx_data[0] = 0xdead;
-    // tx_data[1] = 0xbeef;
-    // tx_data[2] = 0x1354;
-    tx_data_8[0] = 0x80;
-    tx_data_8[1] = 0x0D;
-    tx_data_8[2] = 0x00;
-    // req.txData = (uint8_t *)tx_data;
-    // req.rxData = (uint8_t *)rx_data;
-    req.txData = (uint8_t *)tx_data_8;
-    req.rxData = (uint8_t *)rx_data_8;
-    req.txLen = 3;
-    req.rxLen = 3;
-
-#if MASTERSYNC
-        MXC_SPI_MasterTransaction(&req);
-#endif
-
-#if MASTERASYNC
-        NVIC_EnableIRQ(SPI_IRQ);
-        MXC_SPI_MasterTransactionAsync(&req);
-
-        while (SPI_FLAG == 1) {}
-#endif
-
- 
-#if MASTERDMA
-    MXC_DMA_ReleaseChannel(0);
-    MXC_DMA_ReleaseChannel(1);
-
-    // NVIC_EnableIRQ(DMA0_IRQn);
-    // NVIC_EnableIRQ(DMA1_IRQn);
-    MXC_SPI_MasterTransactionDMA(&req);
-
-    while (DMA_FLAG == 0) {}
-
-    DMA_FLAG = 0;
-#endif
-#endif
-    AD4696_RESET();
+    AD4696_RESET_HOLD();
     //MXC_GPIO_OutClr(MXC_GPIO1, MXC_GPIO_PIN_1);
+    printf("GPIO_flag %d\n",GPIO_FLAG);
     printf("\nExample Complete.\n");
     return E_NO_ERROR;
 }
