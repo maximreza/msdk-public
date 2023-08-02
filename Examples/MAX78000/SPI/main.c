@@ -124,8 +124,22 @@ volatile uint32_t GPIO_FLAG = 0;
 #define GP_MODE         0x0027
 #define GPIO_STATE      0x0028
 
+#define DEBUG_PIN_H MXC_GPIO_OutSet(MXC_GPIO1,MXC_GPIO_PIN_0);
+#define DEBUG_PIN_L MXC_GPIO_OutClr(MXC_GPIO1,MXC_GPIO_PIN_0);
+
+inline void DEBUG_TOGGLE_H2L(void){
+    DEBUG_PIN_H;
+    DEBUG_PIN_L;
+}
+
+inline void DEBUG_TOGGLE_L2H(void){
+    DEBUG_PIN_L;
+    DEBUG_PIN_H;
+}
+
 int AD4696_command_convert(uint8_t value,uint8_t len);
 void print_SPI(void); 
+
 //TODO fix register descriptions
 typedef struct {
     __IO uint8_t  spi_config_a;                  /**< <tt>\b 0x00:</tt> GPIO_REVA EN0 Register */
@@ -258,30 +272,47 @@ static void spi_transmit(void* datain, unsigned int count)
 
 void GPIO_IRQHandler(void) 
 {
-    //MXC_GPIO_OutSet(MXC_GPIO3,MXC_GPIO_PIN_1);
-
+    DEBUG_TOGGLE_H2L();
+    //MXC_GPIO_Handler(MXC_GPIO_PORT_0);
     if (GPIO_FLAG <30020) {
-        //LED_On(LED_GREEN);
-
-        AD4696_command_convert(0x00,1);
-        //MXC_GPIO_OutClr(MXC_GPIO3,MXC_GPIO_PIN_1);
-        //LED_Off(LED_GREEN);
+        AD4696_command_convert(0x00,0);
     }
     else {
-        AD4696_command_convert(0xA0,1);
+        AD4696_command_convert(0xA0,0);
         NVIC_DisableIRQ(MXC_GPIO_GET_IRQ(MXC_GPIO_GET_IDX(MXC_GPIO0)));
     }
     MXC_GPIO_Handler(MXC_GPIO_PORT_0);
+    DEBUG_TOGGLE_H2L();
     //MXC_GPIO_OutClr(MXC_GPIO3,MXC_GPIO_PIN_1);
     GPIO_FLAG ++;
 }
 
-void print_GPIO(void){
-	printf("\n***** GPIO REGISTERS *****\n");
+void print_GPIO(uint32_t port){
+	printf("\n***** GPIO_%d REGISTERS *****\n",port);
 	//format
 	// 	printf("0x:%08X\n",     *(  (volatile uint32_t *) <address in hex>  )      );
 	//
-	uint32_t gpio_base = 0x40008000;
+    if (port == MXC_GPIO_PORT_3) {
+        printf(" GPIO3 is not supported by this function!\n");
+        return;
+    }
+    uint32_t offset =0;
+    switch (port) {
+        case MXC_GPIO_PORT_0:
+            offset = 0x0000;
+            break;
+        case MXC_GPIO_PORT_1:
+            offset = 0x1000;
+            break;
+        case MXC_GPIO_PORT_2:
+            offset = 0x78400;
+            break;
+        default:
+            offset = 0x1000;
+            break;
+    }
+
+	uint32_t gpio_base = 0x40008000 + offset;
 	printf("00 - EN0:  %08X\n",*((volatile uint32_t *) (gpio_base + 0x00)));
 	printf("0C - OUTEN:%08X\n",*((volatile uint32_t *) (gpio_base + 0x0C)));
 	printf("18 - OUT:  %08X\n",*((volatile uint32_t *) (gpio_base + 0x18)));
@@ -339,11 +370,14 @@ void SPI_Callback(mxc_spi_req_t *req, int error)
 {
     SPI_FLAG = error;
 }
-// configure AD4696 nRESET (p1.1), CNV(p1.6) and GPIO (p0.19)
+
+
+// configure AD4696 nRESET(p1.1), CNV(p1.6) and BUSY(p0.19). p1.0 is debug pin
 const mxc_gpio_cfg_t ad4696_pins[] = {
-    { MXC_GPIO1, MXC_GPIO_PIN_6, MXC_GPIO_FUNC_OUT, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO }, //CNV
+    { MXC_GPIO1, MXC_GPIO_PIN_6, MXC_GPIO_FUNC_OUT, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO },  //CNV
     { MXC_GPIO1, MXC_GPIO_PIN_1, MXC_GPIO_FUNC_OUT, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO },  //nRESET
-    { MXC_GPIO0, MXC_GPIO_PIN_19, MXC_GPIO_FUNC_IN, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO }, //p0.19
+    { MXC_GPIO0, MXC_GPIO_PIN_19, MXC_GPIO_FUNC_IN, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO },  //BUSY
+    { MXC_GPIO1, MXC_GPIO_PIN_0, MXC_GPIO_FUNC_OUT, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO },  //Debug
 };
 const unsigned int ad4696_num_gpios = (sizeof(ad4696_pins) / sizeof(mxc_gpio_cfg_t));
 
@@ -522,7 +556,7 @@ int AD4696_READ1(ad4696_regs_t *regs) {
     //     printf("\nSPI SET WIDTH ERROR: %d\n", retVal);
     //     return retVal;
     // }
-    //print_GPIO();
+    //print_GPIO(0);
 #endif
 #if MASTERSYNC
         MXC_SPI_MasterTransaction(&req);
@@ -567,7 +601,7 @@ int AD4696_WRITE(uint16_t addr, uint8_t value) {
     req.txLen = 3;
     req.rxLen = 3;
 
-    //print_GPIO();
+    //print_GPIO(0);
 #if MASTERSYNC
         retVal = MXC_SPI_MasterTransaction(&req);
 #endif
@@ -688,7 +722,7 @@ int AD4696_command_convert(uint8_t value,uint8_t len) {
     req.txLen = len+2;
     req.rxLen = len+2;
 #if MASTERSYNC
-         spi_transmit((uint8_t*)tx_data_8,3);  
+         spi_transmit((uint8_t*)tx_data_8,2+len);  
          retVal = 0; 
         //retVal= MXC_SPI_MasterTransaction(&req);
 #endif
@@ -748,10 +782,10 @@ int main(void)
     SystemCoreClockUpdate();
     printf("\n**************************** SPI MASTER with AD4696 *************************\n");
     printf("[x] Compiled: %s, %s\n",__DATE__,__TIME__);
-    //print_GPIO();
+    //print_GPIO(0);
     printf("set up RESET and CNV pins\n");
     ad4696_pins_Init();
-    //print_GPIO();
+    //print_GPIO(0);
 #ifdef BOARD_EVKIT_V1
     printf("evkit is not supported\n");
     return 0;
