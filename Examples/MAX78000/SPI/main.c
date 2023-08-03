@@ -72,7 +72,9 @@
 #define DATA_LEN 1000 // Words
 #define DATA_VALUE 0xA5A5 // This is for master mode only...
 #define VALUE 0xFFFF
-#define SPI_SPEED 10000000 // Bit Rate
+#define SPI_SPEED 50000000 // Bit Rate
+
+#define AUTO_CYCLE
 
 #ifdef BOARD_EVKIT_V1
 #define SPI_INSTANCE_NUM 0
@@ -123,9 +125,15 @@ volatile uint32_t GPIO_FLAG = 0;
 #define GPIO_CTRL       0x0026
 #define GP_MODE         0x0027
 #define GPIO_STATE      0x0028
+#define TEMP_CTRL       0x0029
+#define CONFIG_IN0      0x0030
 
-#define DEBUG_PIN_H MXC_GPIO_OutSet(MXC_GPIO1,MXC_GPIO_PIN_0);
-#define DEBUG_PIN_L MXC_GPIO_OutClr(MXC_GPIO1,MXC_GPIO_PIN_0);
+// the following two lines are slow to use to time a loop
+#define DEBUG_PIN_1H MXC_GPIO_OutSet(MXC_GPIO1,MXC_GPIO_PIN_0);
+#define DEBUG_PIN_1L MXC_GPIO_OutClr(MXC_GPIO1,MXC_GPIO_PIN_0);
+
+#define DEBUG_PIN_H *((volatile uint32_t *) (0x40009000 + 0x1C)) = 0x1;
+#define DEBUG_PIN_L *((volatile uint32_t *) (0x40009000 + 0x20)) = 0x1;
 
 inline void DEBUG_TOGGLE_H2L(void){
     DEBUG_PIN_H;
@@ -270,7 +278,7 @@ static void spi_transmit(void* datain, unsigned int count)
 }
 
 
-void GPIO_IRQHandler(void) 
+void GPIO0_IRQHandler(void) 
 {
     DEBUG_TOGGLE_H2L();
     //MXC_GPIO_Handler(MXC_GPIO_PORT_0);
@@ -281,9 +289,13 @@ void GPIO_IRQHandler(void)
         AD4696_command_convert(0xA0,0);
         NVIC_DisableIRQ(MXC_GPIO_GET_IRQ(MXC_GPIO_GET_IDX(MXC_GPIO0)));
     }
+
+    uint32_t stat;
+    mxc_gpio_regs_t *gpio = MXC_GPIO_GET_GPIO(0);
+    stat = MXC_GPIO_GetFlags(gpio);
+    MXC_GPIO_ClearFlags(gpio, stat);
     MXC_GPIO_Handler(MXC_GPIO_PORT_0);
     DEBUG_TOGGLE_H2L();
-    //MXC_GPIO_OutClr(MXC_GPIO3,MXC_GPIO_PIN_1);
     GPIO_FLAG ++;
 }
 
@@ -374,11 +386,12 @@ void SPI_Callback(mxc_spi_req_t *req, int error)
 
 // configure AD4696 nRESET(p1.1), CNV(p1.6) and BUSY(p0.19). p1.0 is debug pin
 const mxc_gpio_cfg_t ad4696_pins[] = {
-    { MXC_GPIO1, MXC_GPIO_PIN_6, MXC_GPIO_FUNC_OUT, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO },  //CNV
+    { MXC_GPIO1, MXC_GPIO_PIN_6, MXC_GPIO_FUNC_IN, MXC_GPIO_PAD_WEAK_PULL_UP, MXC_GPIO_VSSEL_VDDIO },  //CNV
     { MXC_GPIO1, MXC_GPIO_PIN_1, MXC_GPIO_FUNC_OUT, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO },  //nRESET
     { MXC_GPIO0, MXC_GPIO_PIN_19, MXC_GPIO_FUNC_IN, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO },  //BUSY
     { MXC_GPIO1, MXC_GPIO_PIN_0, MXC_GPIO_FUNC_OUT, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO },  //Debug
 };
+
 const unsigned int ad4696_num_gpios = (sizeof(ad4696_pins) / sizeof(mxc_gpio_cfg_t));
 
 int ad4696_pins_Init(void)
@@ -758,10 +771,12 @@ void AD4696_busy_config(void) {
     // mxc_gpio_cfg_t req;
     // req.mask = MXC_GPIO_PIN_19;
     //uint32_t* dummy=0;
+    // the following Register call back could be very slow to use
+#if 0
     MXC_GPIO_RegisterCallback(&ad4696_pins[2],
                              (mxc_gpio_callback_fn) GPIO_IRQHandler,
                              (void*)&ad4696_pins[2]);
-
+#endif
     MXC_GPIO_IntConfig(&ad4696_pins[2], MXC_GPIO_INT_FALLING);
     MXC_GPIO_EnableInt(MXC_GPIO0, MXC_GPIO_PIN_19);
     //NVIC_EnableIRQ(MXC_GPIO_GET_IRQ(MXC_GPIO_GET_IDX(MXC_GPIO0)));
@@ -818,26 +833,35 @@ int main(void)
     // printf("in the main %04x\n", ad_4696_regs.spi_config_c);
     // printf("in the main(->) %04x\n", (uint8_t*)(&(ad_4696_regs.as_slot_n[127]))-&ad_4696_regs.spi_config_a);
     // //AD4696_READ1(&ad_4696_regs.std_seq_config);
+    AD4696_WRITE(CONFIG_IN0, 0); //no oversampling
     AD4696_READ(SPI_STATUS);
     AD4696_READ(STATUS);
     AD4696_WRITE(GPIO_CTRL, 0x1); //GPIO output
     AD4696_WRITE(GP_MODE, 0x2);    // GPIO busy
+    #ifdef AUTO_CYCLE
     AD4696_WRITE(AC_CTRL, (0x0<<1)+1); // 0x0<<1 is the fastest
-    AD4696_WRITE(SETUP, 0x14); // 
+    #endif
+    AD4696_WRITE(SETUP, 0x14); // conversion starts
     //MXC_Delay(12);
+    #ifdef AUTO_CYCLE
     NVIC_EnableIRQ(MXC_GPIO_GET_IRQ(MXC_GPIO_GET_IDX(MXC_GPIO0)));
     LED_On(LED_GREEN);
     while(GPIO_FLAG < 30021);
     LED_Off(LED_GREEN);
+    #endif
     //while(1);
-    // AD4696_command_convert(0x00,1);
-    // AD4696_command_convert(0x00,1);
-    // AD4696_command_convert(0x00,1);
-    // AD4696_command_convert(0x00,1);
-    // AD4696_command_convert(0x00,1);
-    // AD4696_command_convert(0x00,1);
-    // AD4696_command_convert(0x00,1);
-    // AD4696_command_convert(0xA0,1);
+    #ifndef AUTO_CYCLE
+    LED_On(LED_GREEN);
+    AD4696_command_convert(0x00,1);
+    AD4696_command_convert(0x00,1);
+    AD4696_command_convert(0x00,0);
+    AD4696_command_convert(0x00,1);
+    AD4696_command_convert(0x00,0);
+    AD4696_command_convert(0x00,1);
+    AD4696_command_convert(0x00,1);
+    AD4696_command_convert(0xA0,0);
+    LED_Off(LED_GREEN);
+    #endif
     AD4696_READ(SPI_STATUS);
     AD4696_READ(STATUS);
     printf("Status register %08x\n",rx_data_8[2]);
