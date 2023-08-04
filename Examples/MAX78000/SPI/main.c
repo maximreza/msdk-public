@@ -864,7 +864,7 @@ int main(void)
     //mxc_spi_req_t req;
     //mxc_spi_pins_t spi_pins;
     //ad4696_regs_t ad_4696_regs;
-    uint32_t SAMPLE_SIZE_IN_BYTES = 3;
+    uint32_t SAMPLE_SIZE_IN_BYTES = 2;
     MXC_ICC_Enable(MXC_ICC0);
 
     /* Set system clock to 100 MHz */
