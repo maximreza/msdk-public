@@ -296,7 +296,7 @@ typedef struct {
 ad4696_regs_t ad_4696_regs;
 ////
 /***** Functions *****/
-static void spi_dma_setup(void)
+static void spi_dma_setup(uint32_t sample_size)
 {
     //DEBUG_TOGGLE_H2L();
     //SPI->TX
@@ -331,23 +331,23 @@ static void spi_dma_setup(void)
                                       (0x0 << MXC_F_DMA_CTRL_SRCINC_POS)     +
                                       (0x0 << MXC_F_DMA_CTRL_SRCWD_POS)      +
                                       (0x0 << MXC_F_DMA_CTRL_TO_CLKDIV_POS)  +
-                                      (0x0 << MXC_F_DMA_CTRL_TO_WAIT_POS)    +
+                                      (0x1 << MXC_F_DMA_CTRL_TO_WAIT_POS)    +
                                       (0xF << MXC_F_DMA_CTRL_REQUEST_POS)    +  // To SPI0 -> Rx
                                       (0x0 << MXC_F_DMA_CTRL_PRI_POS)        +  // High Priority
                                       (0x0 << MXC_F_DMA_CTRL_RLDEN_POS)    //+  // Reload disabled
                                     //(0x1 << MXC_F_DMA_CTRL_EN_POS)           // Enable DMA channel
                                     );
     MXC_SPI0->ctrl0 &= ~(MXC_F_SPI_CTRL0_EN);
-    MXC_SETFIELD(MXC_SPI0->ctrl1, MXC_F_SPI_CTRL1_TX_NUM_CHAR, (0x2) << MXC_F_SPI_CTRL1_TX_NUM_CHAR_POS);
-    MXC_SETFIELD(MXC_SPI0->ctrl1, MXC_F_SPI_CTRL1_RX_NUM_CHAR, (0x2) << MXC_F_SPI_CTRL1_RX_NUM_CHAR_POS);
+    MXC_SETFIELD(MXC_SPI0->ctrl1, MXC_F_SPI_CTRL1_TX_NUM_CHAR, (sample_size) << MXC_F_SPI_CTRL1_TX_NUM_CHAR_POS);
+    MXC_SETFIELD(MXC_SPI0->ctrl1, MXC_F_SPI_CTRL1_RX_NUM_CHAR, (sample_size) << MXC_F_SPI_CTRL1_RX_NUM_CHAR_POS);
     MXC_SPI0->dma   |= (MXC_F_SPI_DMA_TX_FLUSH | MXC_F_SPI_DMA_RX_FLUSH);
         // QSPIn port is enabled
     //MXC_SPI0->ctrl0 |= (MXC_F_SPI_CTRL0_EN);
 
         // Clear master done flag
     MXC_SPI0->intfl = MXC_F_SPI_INTFL_MST_DONE;
-    MXC_SETFIELD (MXC_SPI0->dma, MXC_F_SPI_DMA_TX_THD_VAL, 0x02 << MXC_F_SPI_DMA_TX_THD_VAL_POS);
-    MXC_SETFIELD (MXC_SPI0->dma, MXC_F_SPI_DMA_RX_THD_VAL, 0x02 << MXC_F_SPI_DMA_RX_THD_VAL_POS);
+    MXC_SETFIELD (MXC_SPI0->dma, MXC_F_SPI_DMA_TX_THD_VAL, (sample_size) << MXC_F_SPI_DMA_TX_THD_VAL_POS);
+    MXC_SETFIELD (MXC_SPI0->dma, MXC_F_SPI_DMA_RX_THD_VAL, (0) << MXC_F_SPI_DMA_RX_THD_VAL_POS);
     MXC_SPI0->dma |= (MXC_F_SPI_DMA_TX_FIFO_EN);
     MXC_SPI0->dma |= (MXC_F_SPI_DMA_RX_FIFO_EN);
     MXC_SPI0->dma |= (MXC_F_SPI_DMA_DMA_TX_EN);
@@ -359,44 +359,47 @@ static void spi_dma_setup(void)
     return;
 }
 
-static void spi_dma_transmit(uint8_t* src_ptr, uint8_t* dst_ptr, uint32_t byte_count) 
+static void spi_dma_transmit(uint8_t* src_ptr, uint8_t* dst_ptr, uint32_t sample_count, uint32_t sample_size) 
 { 
 //DEBUG_TOGGLE_H2L();
 //DEBUG_TOGGLE_H2L();
-    while((MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS) &
-          (MXC_DMA->ch[g_dma_spi_rx].status & MXC_F_DMA_STATUS_STATUS))
-        {
-        	;
-        }
-//DEBUG_TOGGLE_H2L();
-        if (MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_CTZ_IF)
-        {
-            MXC_DMA->ch[g_dma_spi_tx].status = MXC_F_DMA_STATUS_CTZ_IF;
-        }
-        if (MXC_DMA->ch[g_dma_spi_rx].status & MXC_F_DMA_STATUS_CTZ_IF)
-        {
-            MXC_DMA->ch[g_dma_spi_rx].status = MXC_F_DMA_STATUS_CTZ_IF;
-        }
-//DEBUG_TOGGLE_H2L();
-    	MXC_DMA->ch[g_dma_spi_tx].cnt = byte_count;
-    	MXC_DMA->ch[g_dma_spi_tx].src = (uint32_t)src_ptr;
-
-        MXC_DMA->ch[g_dma_spi_rx].cnt = byte_count;
-    	MXC_DMA->ch[g_dma_spi_rx].dst = (uint32_t)dst_ptr;
-//DEBUG_TOGGLE_H2L();
-        //printf("DMA count %08X,%08X\n", (MXC_DMA->ch[g_dma_spi_rx].ctrl),dst_ptr);
-    	// Enable DMA channel
-    	MXC_DMA->ch[g_dma_spi_rx].ctrl += (0x1 << MXC_F_DMA_CTRL_EN_POS);
-        MXC_DMA->ch[g_dma_spi_tx].ctrl += (0x1 << MXC_F_DMA_CTRL_EN_POS);
-        //print_DMA();
-    	//MXC_Delay(1);
-    	//asm("NOP");
-    	//asm("NOP");
-    	// Start DMA
-    	MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
-//DEBUG_TOGGLE_H2L();
-        //while((MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS));
-//DEBUG_TOGGLE_H2L();
+    MXC_DMA->ch[g_dma_spi_tx].src = (uint32_t)src_ptr;
+    for (uint32_t i=0;i<sample_count;i++) {
+        while((MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS) &
+              (MXC_DMA->ch[g_dma_spi_rx].status & MXC_F_DMA_STATUS_STATUS))
+            {
+                ;
+            }
+    //DEBUG_TOGGLE_H2L();
+            if (MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_CTZ_IF)
+            {
+                MXC_DMA->ch[g_dma_spi_tx].status = MXC_F_DMA_STATUS_CTZ_IF;
+            }
+            if (MXC_DMA->ch[g_dma_spi_rx].status & MXC_F_DMA_STATUS_CTZ_IF)
+            {
+                MXC_DMA->ch[g_dma_spi_rx].status = MXC_F_DMA_STATUS_CTZ_IF;
+            }
+    //DEBUG_TOGGLE_H2L();
+            MXC_DMA->ch[g_dma_spi_tx].cnt = sample_size;
+            //MXC_DMA->ch[g_dma_spi_tx].src = (uint32_t)src_ptr;
+    
+            MXC_DMA->ch[g_dma_spi_rx].cnt = sample_size;
+            MXC_DMA->ch[g_dma_spi_rx].dst = (uint32_t)(dst_ptr + (sample_size)*i);
+    //DEBUG_TOGGLE_H2L();
+            //printf("DMA dst reg =%08X, %08X\n", (MXC_DMA->ch[g_dma_spi_rx].dst),dst_ptr);
+            // Enable DMA channel
+            MXC_DMA->ch[g_dma_spi_rx].ctrl += (0x1 << MXC_F_DMA_CTRL_EN_POS);
+            MXC_DMA->ch[g_dma_spi_tx].ctrl += (0x1 << MXC_F_DMA_CTRL_EN_POS);
+            //print_DMA();
+            //MXC_Delay(1);
+            //asm("NOP");
+            //asm("NOP");
+            // Start DMA
+            MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
+    //DEBUG_TOGGLE_H2L();
+            //while((MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS));
+    //DEBUG_TOGGLE_H2L();
+    }
     return;
 }
 
@@ -824,7 +827,7 @@ int AD4696_command_convert(uint8_t value,uint8_t len) {
     return retVal;
 }
 
-int AD4696_command_convert_dma(uint8_t value,uint32_t len) {
+int AD4696_command_convert_dma(uint8_t value, uint32_t sample_count, uint32_t sample_size) {
 
     int retVal = 0;
     //mxc_spi_req_t req;
@@ -833,7 +836,7 @@ int AD4696_command_convert_dma(uint8_t value,uint32_t len) {
     tx_data_8[1] = 0x00;
     //tx_data_8[2] = 0x00;
 
-    spi_dma_transmit(tx_data_8, rx_data_8, len);
+    spi_dma_transmit(tx_data_8, rx_data_8, sample_count, sample_size);
  
     return retVal;
 }
@@ -861,6 +864,7 @@ int main(void)
     //mxc_spi_req_t req;
     //mxc_spi_pins_t spi_pins;
     //ad4696_regs_t ad_4696_regs;
+    uint32_t SAMPLE_SIZE_IN_BYTES = 3;
     MXC_ICC_Enable(MXC_ICC0);
 
     /* Set system clock to 100 MHz */
@@ -921,31 +925,42 @@ int main(void)
     #endif
     //while(1);
     #ifndef AUTO_CYCLE
-    spi_dma_setup();
+    spi_dma_setup(SAMPLE_SIZE_IN_BYTES);
     LED_On(LED_GREEN);
-    AD4696_command_convert_dma(0x00,2);
+    uint32_t nr_sample = 100;
+    AD4696_command_convert_dma(0x00, nr_sample ,SAMPLE_SIZE_IN_BYTES);
+    for(uint32_t j = 0; j< ((nr_sample)* SAMPLE_SIZE_IN_BYTES); j=j+SAMPLE_SIZE_IN_BYTES) {
+        if (SAMPLE_SIZE_IN_BYTES == 2)
+            printf("%02X %02X\t",rx_data_8[j],rx_data_8[j+1]);
+        if (SAMPLE_SIZE_IN_BYTES == 3)
+            printf("%02X %02X %02X\t",rx_data_8[j],rx_data_8[j+1],rx_data_8[j+2]);
+        else
+            continue;
+    }
+    printf("\n");
+    AD4696_command_convert_dma(0xA0,  1, SAMPLE_SIZE_IN_BYTES);
       //printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
     //print_DMA();
     //while(1);
     
-    AD4696_command_convert_dma(0x00,2);
-    //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
-    AD4696_command_convert_dma(0x00,2);
-    //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
-    AD4696_command_convert_dma(0x00,2);
-    //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
-    AD4696_command_convert_dma(0x00,2);
-    //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
-    AD4696_command_convert_dma(0x00,2);
-    //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
-    AD4696_command_convert_dma(0x00,2);
-    //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
-    AD4696_command_convert_dma(0x00,2);
-    //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
-    AD4696_command_convert_dma(0x00,2);
-    //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
-    AD4696_command_convert_dma(0xA0,2);
-    //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    // AD4696_command_convert_dma(0x00,2);
+    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    // AD4696_command_convert_dma(0x00,2);
+    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    // AD4696_command_convert_dma(0x00,2);
+    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    // AD4696_command_convert_dma(0x00,2);
+    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    // AD4696_command_convert_dma(0x00,2);
+    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    // AD4696_command_convert_dma(0x00,2);
+    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    // AD4696_command_convert_dma(0x00,2);
+    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    // AD4696_command_convert_dma(0x00,2);
+    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    // AD4696_command_convert_dma(0xA0,2);
+    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
     LED_Off(LED_GREEN);
     #endif
     AD4696_READ(SPI_STATUS);
@@ -1269,3 +1284,54 @@ int main1(void)
 
 #endif
 
+#if 0
+    for (uint32_t i=0;i<sample_count;i++) {
+
+        while (MXC_DMA->ch[g_dma_spi_rx].status & MXC_F_DMA_STATUS_STATUS)
+        {
+                ;
+        }
+        if (MXC_DMA->ch[g_dma_spi_rx].status & MXC_F_DMA_STATUS_CTZ_IF)
+        {
+            MXC_DMA->ch[g_dma_spi_rx].status = MXC_F_DMA_STATUS_CTZ_IF;
+        }
+        MXC_DMA->ch[g_dma_spi_rx].cnt = sample_size;
+        MXC_DMA->ch[g_dma_spi_rx].dst = (uint32_t)(dst_ptr + (sample_size)*i);
+        MXC_DMA->ch[g_dma_spi_rx].ctrl += (0x1 << MXC_F_DMA_CTRL_EN_POS);
+        
+        while((MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS))
+        {
+            ;
+        }
+        if (MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_CTZ_IF)
+        {
+            MXC_DMA->ch[g_dma_spi_tx].status = MXC_F_DMA_STATUS_CTZ_IF;
+        }
+        
+        MXC_DMA->ch[g_dma_spi_tx].cnt = sample_size;
+        //MXC_DMA->ch[g_dma_spi_tx].src = (uint32_t)src_ptr;
+
+  
+        MXC_DMA->ch[g_dma_spi_tx].ctrl += (0x1 << MXC_F_DMA_CTRL_EN_POS);
+        MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
+
+    
+    //DEBUG_TOGGLE_H2L();
+  
+
+    
+    //DEBUG_TOGGLE_H2L();
+            //printf("DMA dst reg =%08X, %08X\n", (MXC_DMA->ch[g_dma_spi_rx].dst),dst_ptr);
+            // Enable DMA channel
+     
+            //print_DMA();
+            //MXC_Delay(1);
+            //asm("NOP");
+            //asm("NOP");
+            // Start DMA
+            
+    //DEBUG_TOGGLE_H2L();
+            //while((MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS));
+    //DEBUG_TOGGLE_H2L();
+    }
+#endif
