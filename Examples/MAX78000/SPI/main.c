@@ -74,7 +74,7 @@
 #define VALUE 0xFFFF
 #define SPI_SPEED 50000000 // Bit Rate
 
-#define AUTO_CYCLE
+//#define AUTO_CYCLE
 
 #ifdef BOARD_EVKIT_V1
 #define SPI_INSTANCE_NUM 0
@@ -87,6 +87,10 @@
 #endif
 
 /***** Globals *****/
+static int g_stream_buffer_size = 64;
+static int g_dma_spi_tx = 0;
+static int g_dma_spi_rx = 1;
+static int g_dma_already_setup = 0;
 uint16_t rx_data[DATA_LEN];
 uint16_t tx_data[DATA_LEN];
 uint8_t rx_data_8[DATA_LEN];
@@ -128,12 +132,100 @@ volatile uint32_t GPIO_FLAG = 0;
 #define TEMP_CTRL       0x0029
 #define CONFIG_IN0      0x0030
 
-// the following two lines are slow to use to time a loop
+// the following two lines are slow to use to measure a loop
 #define DEBUG_PIN_1H MXC_GPIO_OutSet(MXC_GPIO1,MXC_GPIO_PIN_0);
 #define DEBUG_PIN_1L MXC_GPIO_OutClr(MXC_GPIO1,MXC_GPIO_PIN_0);
 
-#define DEBUG_PIN_H *((volatile uint32_t *) (0x40009000 + 0x1C)) = 0x1;
-#define DEBUG_PIN_L *((volatile uint32_t *) (0x40009000 + 0x20)) = 0x1;
+#define DEBUG_PIN_H *((volatile uint32_t *) (0x4000901C)) = 0x1;
+#define DEBUG_PIN_L *((volatile uint32_t *) (0x40009020)) = 0x1;
+
+int AD4696_command_convert(uint8_t value,uint8_t len);
+
+void print_GPIO(uint32_t port){
+	printf("\n***** GPIO_%d REGISTERS *****\n",port);
+	//format
+	// 	printf("0x:%08X\n",     *(  (volatile uint32_t *) <address in hex>  )      );
+	//
+    if (port == MXC_GPIO_PORT_3) {
+        printf(" GPIO3 is not supported by this function!\n");
+        return;
+    }
+    uint32_t offset =0;
+    switch (port) {
+        case MXC_GPIO_PORT_0:
+            offset = 0x0000;
+            break;
+        case MXC_GPIO_PORT_1:
+            offset = 0x1000;
+            break;
+        case MXC_GPIO_PORT_2:
+            offset = 0x78400;
+            break;
+        default:
+            offset = 0x1000;
+            break;
+    }
+
+	uint32_t gpio_base = 0x40008000 + offset;
+	printf("00 - EN0:  %08X\n",*((volatile uint32_t *) (gpio_base + 0x00)));
+	printf("0C - OUTEN:%08X\n",*((volatile uint32_t *) (gpio_base + 0x0C)));
+	printf("18 - OUT:  %08X\n",*((volatile uint32_t *) (gpio_base + 0x18)));
+	printf("24 - IN:   %08X\n",*((volatile uint32_t *) (gpio_base + 0x24)));
+	printf("60 - PAD0: %08X\n",*((volatile uint32_t *) (gpio_base + 0x60)));
+	printf("64 - PAD1: %08X\n",*((volatile uint32_t *) (gpio_base + 0x64)));
+	printf("68 - EN1:  %08X\n",*((volatile uint32_t *) (gpio_base + 0x68)));
+	printf("74 - EN2:  %08X\n",*((volatile uint32_t *) (gpio_base + 0x74)));
+	printf("B0 - DS0:  %08X\n",*((volatile uint32_t *) (gpio_base + 0xB0)));
+	printf("B4 - DS11: %08X\n",*((volatile uint32_t *) (gpio_base + 0xB4)));
+    printf("B8 - PS:   %08X\n",*((volatile uint32_t *) (gpio_base + 0xB8)));
+	printf("C0 - VSSL: %08X\n",*((volatile uint32_t *) (gpio_base + 0xC0)));
+	printf("*************************\n");
+
+}
+
+void print_SPI(void){
+	printf("\n***** SPI REGISTERS *****\n");
+	//format
+	// 	printf("0x:%08X\n",     *(  (volatile uint32_t *) <address in hex>  )      );
+	//
+	uint32_t spi_base = 0x400BE000;
+	printf("04 - CTRL0:  %08X\n",*((volatile uint32_t *) (spi_base + 0x04)));
+	printf("08 - CTRL1:  %08X\n",*((volatile uint32_t *) (spi_base + 0x08)));
+	printf("0C - CTRL2:  %08X\n",*((volatile uint32_t *) (spi_base + 0x0C)));
+	printf("10 - SSTIM:  %08X\n",*((volatile uint32_t *) (spi_base + 0x10)));
+	printf("14 - CKCTR:  %08X\n",*((volatile uint32_t *) (spi_base + 0x14)));
+	printf("1C - DMA:    %08X\n",*((volatile uint32_t *) (spi_base + 0x1C)));
+	printf("20 - INTFL:  %08X\n",*((volatile uint32_t *) (spi_base + 0x20)));
+	printf("24 - INTEN:  %08X\n",*((volatile uint32_t *) (spi_base + 0x24)));
+	printf("28 - WKFL:   %08X\n",*((volatile uint32_t *) (spi_base + 0x28)));
+    printf("2C - WKEN:   %08X\n",*((volatile uint32_t *) (spi_base + 0x2C)));
+	printf("30 - STAT:   %08X\n",*((volatile uint32_t *) (spi_base + 0x30)));
+	printf("*************************\n");
+
+}
+
+void print_DMA(void){
+    printf("\n***** DMA REGISTERS *****\n");
+    //format
+    // 	printf("0x:%08X\n",     *(  (volatile uint32_t *) <address in hex>  )      );
+    //
+    uint32_t dma_base = (0x40028000+0x0100);
+    printf("00 - CH0CTRL: %08X\n",*((volatile uint32_t *) (dma_base + 0x00)));
+    printf("04 - CH0STAT: %08X\n",*((volatile uint32_t *) (dma_base + 0x04)));
+    printf("08 - CH0SRC:  %08X\n",*((volatile uint32_t *) (dma_base + 0x08)));
+    printf("0C - CH0DST:  %08X\n",*((volatile uint32_t *) (dma_base + 0x0C)));
+    printf("10 - CH0CNT:  %08X\n\n",*((volatile uint32_t *) (dma_base + 0x10)));
+
+    dma_base = (0x40028000+0x0120);
+    printf("00 - CH1CTRL: %08X\n",*((volatile uint32_t *) (dma_base + 0x00)));
+    printf("04 - CH1STAT: %08X\n",*((volatile uint32_t *) (dma_base + 0x04)));
+    printf("08 - CH1SRC:  %08X\n",*((volatile uint32_t *) (dma_base + 0x08)));
+    printf("0C - CH1DST:  %08X\n",*((volatile uint32_t *) (dma_base + 0x0C)));
+    printf("10 - CH1CNT:  %08X\n\n",*((volatile uint32_t *) (dma_base + 0x10)));
+
+    printf("*************************\n");
+
+}
 
 inline void DEBUG_TOGGLE_H2L(void){
     DEBUG_PIN_H;
@@ -145,8 +237,15 @@ inline void DEBUG_TOGGLE_L2H(void){
     DEBUG_PIN_H;
 }
 
-int AD4696_command_convert(uint8_t value,uint8_t len);
-void print_SPI(void); 
+// configure AD4696 nRESET(p1.1), CNV(p1.6) and BUSY(p0.19). p1.0 is debug pin
+const mxc_gpio_cfg_t ad4696_pins[] = {
+    { MXC_GPIO1, MXC_GPIO_PIN_6, MXC_GPIO_FUNC_IN, MXC_GPIO_PAD_WEAK_PULL_UP, MXC_GPIO_VSSEL_VDDIO },  //CNV
+    { MXC_GPIO1, MXC_GPIO_PIN_1, MXC_GPIO_FUNC_OUT, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO },  //nRESET
+    { MXC_GPIO0, MXC_GPIO_PIN_19, MXC_GPIO_FUNC_IN, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO },  //BUSY
+    { MXC_GPIO1, MXC_GPIO_PIN_0, MXC_GPIO_FUNC_OUT, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO },  //Debug
+};
+
+const unsigned int ad4696_num_gpios = (sizeof(ad4696_pins) / sizeof(mxc_gpio_cfg_t));
 
 //TODO fix register descriptions
 typedef struct {
@@ -197,7 +296,109 @@ typedef struct {
 ad4696_regs_t ad_4696_regs;
 ////
 /***** Functions *****/
+static void spi_dma_setup(void)
+{
+    //DEBUG_TOGGLE_H2L();
+    //SPI->TX
+    MXC_DMA->ch[g_dma_spi_tx].status = MXC_F_DMA_STATUS_CTZ_IF; // Clear CTZ status flag
+    //MXC_DMA->ch[g_dma_spi_tx].dst = (uint32_t) rx_data; // Cast Pointer
+    MXC_DMA->ch[g_dma_spi_tx].cnt = g_stream_buffer_size;
+    MXC_DMA->ch[g_dma_spi_tx].src = (uint32_t)(tx_data_8);
+    MXC_DMA->ch[g_dma_spi_tx].ctrl = ((0x1 << MXC_F_DMA_CTRL_CTZ_IE_POS)     +
+                                      (0x0 << MXC_F_DMA_CTRL_DIS_IE_POS)     +
+                                      (0x0 << MXC_F_DMA_CTRL_BURST_SIZE_POS) +
+                                      (0x0 << MXC_F_DMA_CTRL_DSTINC_POS)     +
+                                      (0x0 << MXC_F_DMA_CTRL_DSTWD_POS)      +
+                                      (0x1 << MXC_F_DMA_CTRL_SRCINC_POS)     +
+                                      (0x0 << MXC_F_DMA_CTRL_SRCWD_POS)      +
+                                      (0x0 << MXC_F_DMA_CTRL_TO_CLKDIV_POS)  +
+                                      (0x0 << MXC_F_DMA_CTRL_TO_WAIT_POS)    +
+                                      (0x2F << MXC_F_DMA_CTRL_REQUEST_POS)   +  // To SPI0 -> Tx
+                                      (0x0 << MXC_F_DMA_CTRL_PRI_POS)        +  // High Priority
+                                      (0x0 << MXC_F_DMA_CTRL_RLDEN_POS)    //+  // Reload disabled
+                                   //(0x1 << MXC_F_DMA_CTRL_EN_POS)           // Enable DMA channel
+                                    );
+    //SPI->RX
+    MXC_DMA->ch[g_dma_spi_rx].status = MXC_F_DMA_STATUS_CTZ_IF; // Clear CTZ status flag
+    MXC_DMA->ch[g_dma_spi_rx].dst = (uint32_t) (rx_data_8); // Cast Pointer
+    MXC_DMA->ch[g_dma_spi_rx].cnt = g_stream_buffer_size;
+    //MXC_DMA->ch[g_dma_spi_rx].src = (uint32_t)(rx_data + g_stream_buffer_size);
+    MXC_DMA->ch[g_dma_spi_rx].ctrl = ((0x1 << MXC_F_DMA_CTRL_CTZ_IE_POS)     +
+                                      (0x0 << MXC_F_DMA_CTRL_DIS_IE_POS)     +
+                                      (0x0 << MXC_F_DMA_CTRL_BURST_SIZE_POS) +
+                                      (0x1 << MXC_F_DMA_CTRL_DSTINC_POS)     +
+                                      (0x0 << MXC_F_DMA_CTRL_DSTWD_POS)      +
+                                      (0x0 << MXC_F_DMA_CTRL_SRCINC_POS)     +
+                                      (0x0 << MXC_F_DMA_CTRL_SRCWD_POS)      +
+                                      (0x0 << MXC_F_DMA_CTRL_TO_CLKDIV_POS)  +
+                                      (0x0 << MXC_F_DMA_CTRL_TO_WAIT_POS)    +
+                                      (0xF << MXC_F_DMA_CTRL_REQUEST_POS)    +  // To SPI0 -> Rx
+                                      (0x0 << MXC_F_DMA_CTRL_PRI_POS)        +  // High Priority
+                                      (0x0 << MXC_F_DMA_CTRL_RLDEN_POS)    //+  // Reload disabled
+                                    //(0x1 << MXC_F_DMA_CTRL_EN_POS)           // Enable DMA channel
+                                    );
+    MXC_SPI0->ctrl0 &= ~(MXC_F_SPI_CTRL0_EN);
+    MXC_SETFIELD(MXC_SPI0->ctrl1, MXC_F_SPI_CTRL1_TX_NUM_CHAR, (0x2) << MXC_F_SPI_CTRL1_TX_NUM_CHAR_POS);
+    MXC_SETFIELD(MXC_SPI0->ctrl1, MXC_F_SPI_CTRL1_RX_NUM_CHAR, (0x2) << MXC_F_SPI_CTRL1_RX_NUM_CHAR_POS);
+    MXC_SPI0->dma   |= (MXC_F_SPI_DMA_TX_FLUSH | MXC_F_SPI_DMA_RX_FLUSH);
+        // QSPIn port is enabled
+    //MXC_SPI0->ctrl0 |= (MXC_F_SPI_CTRL0_EN);
 
+        // Clear master done flag
+    MXC_SPI0->intfl = MXC_F_SPI_INTFL_MST_DONE;
+    MXC_SETFIELD (MXC_SPI0->dma, MXC_F_SPI_DMA_TX_THD_VAL, 0x02 << MXC_F_SPI_DMA_TX_THD_VAL_POS);
+    MXC_SETFIELD (MXC_SPI0->dma, MXC_F_SPI_DMA_RX_THD_VAL, 0x02 << MXC_F_SPI_DMA_RX_THD_VAL_POS);
+    MXC_SPI0->dma |= (MXC_F_SPI_DMA_TX_FIFO_EN);
+    MXC_SPI0->dma |= (MXC_F_SPI_DMA_RX_FIFO_EN);
+    MXC_SPI0->dma |= (MXC_F_SPI_DMA_DMA_TX_EN);
+    MXC_SPI0->dma |= (MXC_F_SPI_DMA_DMA_RX_EN);
+    MXC_SPI0->ctrl0 |= (MXC_F_SPI_CTRL0_EN);
+    g_dma_already_setup = 1;
+    //DEBUG_TOGGLE_H2L();
+    //print_DMA();
+    return;
+}
+
+static void spi_dma_transmit(uint8_t* src_ptr, uint8_t* dst_ptr, uint32_t byte_count) 
+{ 
+//DEBUG_TOGGLE_H2L();
+//DEBUG_TOGGLE_H2L();
+    while((MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS) &
+          (MXC_DMA->ch[g_dma_spi_rx].status & MXC_F_DMA_STATUS_STATUS))
+        {
+        	;
+        }
+//DEBUG_TOGGLE_H2L();
+        if (MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_CTZ_IF)
+        {
+            MXC_DMA->ch[g_dma_spi_tx].status = MXC_F_DMA_STATUS_CTZ_IF;
+        }
+        if (MXC_DMA->ch[g_dma_spi_rx].status & MXC_F_DMA_STATUS_CTZ_IF)
+        {
+            MXC_DMA->ch[g_dma_spi_rx].status = MXC_F_DMA_STATUS_CTZ_IF;
+        }
+//DEBUG_TOGGLE_H2L();
+    	MXC_DMA->ch[g_dma_spi_tx].cnt = byte_count;
+    	MXC_DMA->ch[g_dma_spi_tx].src = (uint32_t)src_ptr;
+
+        MXC_DMA->ch[g_dma_spi_rx].cnt = byte_count;
+    	MXC_DMA->ch[g_dma_spi_rx].dst = (uint32_t)dst_ptr;
+//DEBUG_TOGGLE_H2L();
+        //printf("DMA count %08X,%08X\n", (MXC_DMA->ch[g_dma_spi_rx].ctrl),dst_ptr);
+    	// Enable DMA channel
+    	MXC_DMA->ch[g_dma_spi_rx].ctrl += (0x1 << MXC_F_DMA_CTRL_EN_POS);
+        MXC_DMA->ch[g_dma_spi_tx].ctrl += (0x1 << MXC_F_DMA_CTRL_EN_POS);
+        //print_DMA();
+    	//MXC_Delay(1);
+    	//asm("NOP");
+    	//asm("NOP");
+    	// Start DMA
+    	MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
+//DEBUG_TOGGLE_H2L();
+        //while((MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS));
+//DEBUG_TOGGLE_H2L();
+    return;
+}
 
 static void spi_transmit(void* datain, unsigned int count)
 {
@@ -277,13 +478,13 @@ static void spi_transmit(void* datain, unsigned int count)
     return;
 }
 
-
 void GPIO0_IRQHandler(void) 
 {
     DEBUG_TOGGLE_H2L();
     //MXC_GPIO_Handler(MXC_GPIO_PORT_0);
     if (GPIO_FLAG <30020) {
         AD4696_command_convert(0x00,0);
+    //    DEBUG_TOGGLE_H2L();
     }
     else {
         AD4696_command_convert(0xA0,0);
@@ -293,73 +494,12 @@ void GPIO0_IRQHandler(void)
     uint32_t stat;
     mxc_gpio_regs_t *gpio = MXC_GPIO_GET_GPIO(0);
     stat = MXC_GPIO_GetFlags(gpio);
+    //DEBUG_TOGGLE_H2L();
     MXC_GPIO_ClearFlags(gpio, stat);
-    MXC_GPIO_Handler(MXC_GPIO_PORT_0);
+    //DEBUG_TOGGLE_H2L();
+    //MXC_GPIO_Handler(MXC_GPIO_PORT_0);
     DEBUG_TOGGLE_H2L();
     GPIO_FLAG ++;
-}
-
-void print_GPIO(uint32_t port){
-	printf("\n***** GPIO_%d REGISTERS *****\n",port);
-	//format
-	// 	printf("0x:%08X\n",     *(  (volatile uint32_t *) <address in hex>  )      );
-	//
-    if (port == MXC_GPIO_PORT_3) {
-        printf(" GPIO3 is not supported by this function!\n");
-        return;
-    }
-    uint32_t offset =0;
-    switch (port) {
-        case MXC_GPIO_PORT_0:
-            offset = 0x0000;
-            break;
-        case MXC_GPIO_PORT_1:
-            offset = 0x1000;
-            break;
-        case MXC_GPIO_PORT_2:
-            offset = 0x78400;
-            break;
-        default:
-            offset = 0x1000;
-            break;
-    }
-
-	uint32_t gpio_base = 0x40008000 + offset;
-	printf("00 - EN0:  %08X\n",*((volatile uint32_t *) (gpio_base + 0x00)));
-	printf("0C - OUTEN:%08X\n",*((volatile uint32_t *) (gpio_base + 0x0C)));
-	printf("18 - OUT:  %08X\n",*((volatile uint32_t *) (gpio_base + 0x18)));
-	printf("24 - IN:   %08X\n",*((volatile uint32_t *) (gpio_base + 0x24)));
-	printf("60 - PAD0: %08X\n",*((volatile uint32_t *) (gpio_base + 0x60)));
-	printf("64 - PAD1: %08X\n",*((volatile uint32_t *) (gpio_base + 0x64)));
-	printf("68 - EN1:  %08X\n",*((volatile uint32_t *) (gpio_base + 0x68)));
-	printf("74 - EN2:  %08X\n",*((volatile uint32_t *) (gpio_base + 0x74)));
-	printf("B0 - DS0:  %08X\n",*((volatile uint32_t *) (gpio_base + 0xB0)));
-	printf("B4 - DS11: %08X\n",*((volatile uint32_t *) (gpio_base + 0xB4)));
-    printf("B8 - PS:   %08X\n",*((volatile uint32_t *) (gpio_base + 0xB8)));
-	printf("C0 - VSSL: %08X\n",*((volatile uint32_t *) (gpio_base + 0xC0)));
-	printf("*************************\n");
-
-}
-
-void print_SPI(void){
-	printf("\n***** SPI REGISTERS *****\n");
-	//format
-	// 	printf("0x:%08X\n",     *(  (volatile uint32_t *) <address in hex>  )      );
-	//
-	uint32_t spi_base = 0x400BE000;
-	printf("04 - CTRL0:  %08X\n",*((volatile uint32_t *) (spi_base + 0x04)));
-	printf("08 - CTRL1:  %08X\n",*((volatile uint32_t *) (spi_base + 0x08)));
-	printf("0C - CTRL2:  %08X\n",*((volatile uint32_t *) (spi_base + 0x0C)));
-	printf("10 - SSTIM:  %08X\n",*((volatile uint32_t *) (spi_base + 0x10)));
-	printf("14 - CKCTR:  %08X\n",*((volatile uint32_t *) (spi_base + 0x14)));
-	printf("1C - DMA:    %08X\n",*((volatile uint32_t *) (spi_base + 0x1C)));
-	printf("20 - INTFL:  %08X\n",*((volatile uint32_t *) (spi_base + 0x20)));
-	printf("24 - INTEN:  %08X\n",*((volatile uint32_t *) (spi_base + 0x24)));
-	printf("28 - WKFL:   %08X\n",*((volatile uint32_t *) (spi_base + 0x28)));
-    printf("2C - WKEN:   %08X\n",*((volatile uint32_t *) (spi_base + 0x2C)));
-	printf("30 - STAT:   %08X\n",*((volatile uint32_t *) (spi_base + 0x30)));
-	printf("*************************\n");
-
 }
 
 void SPI_IRQHandler(void)
@@ -382,17 +522,6 @@ void SPI_Callback(mxc_spi_req_t *req, int error)
 {
     SPI_FLAG = error;
 }
-
-
-// configure AD4696 nRESET(p1.1), CNV(p1.6) and BUSY(p0.19). p1.0 is debug pin
-const mxc_gpio_cfg_t ad4696_pins[] = {
-    { MXC_GPIO1, MXC_GPIO_PIN_6, MXC_GPIO_FUNC_IN, MXC_GPIO_PAD_WEAK_PULL_UP, MXC_GPIO_VSSEL_VDDIO },  //CNV
-    { MXC_GPIO1, MXC_GPIO_PIN_1, MXC_GPIO_FUNC_OUT, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO },  //nRESET
-    { MXC_GPIO0, MXC_GPIO_PIN_19, MXC_GPIO_FUNC_IN, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO },  //BUSY
-    { MXC_GPIO1, MXC_GPIO_PIN_0, MXC_GPIO_FUNC_OUT, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO },  //Debug
-};
-
-const unsigned int ad4696_num_gpios = (sizeof(ad4696_pins) / sizeof(mxc_gpio_cfg_t));
 
 int ad4696_pins_Init(void)
 {
@@ -525,79 +654,7 @@ int AD4696_READ(uint16_t addr) {
 #endif
      return retVal;
 }
-#if 0
-int AD4696_READ1(ad4696_regs_t *regs) {
 
-    
-    int retVal, addr;
-    //mxc_spi_req_t req;
-    printf("here is the value from read1 function %04x\n",*value);
-    printf("here is the size of value from read1 function %04x\n",sizeof(*value));
-    printf("here is the value addr from read1 function %04x\n", (uint8_t*)(&(value)));
-    printf("here is the base  addr from read1 function %04x\n", &(ad_4696_regs.spi_config_a));
-    printf("here is the diff addr from read1 function %04x\n", (uint8_t*)((value))-&(ad_4696_regs.spi_config_a));
-    return 0;
-    tx_data_8[0] = ((addr + 0x8000) & 0xFF00 )>>8;//0x80;
-    tx_data_8[1] = (addr & 0x00FF )>>0;//0x0C;
-    tx_data_8[2] = 0x00;
-    req.spi = SPI;
-    //req.txData = (uint8_t *)tx_data;
-    //req.rxData = (uint8_t *)rx_data;
-    req.txData = (uint8_t *)tx_data_8;
-    req.rxData = (uint8_t *)rx_data_8;
-    req.txLen = 3;
-    req.rxLen = 3;
-#if 0
-    // req.ssIdx = 1;
-    // req.ssDeassert = 1;
-    // req.txCnt = 0;
-    // req.rxCnt = 0;
-    // req.completeCB = (spi_complete_cb_t)SPI_Callback;
-    // SPI_FLAG = 1;
-
-    //retVal = MXC_SPI_SetDataSize(SPI, 16);
-    // retVal = MXC_SPI_SetDataSize(SPI, 8);
-
-    // if (retVal != E_NO_ERROR) {
-    //     printf("\nSPI SET DATASIZE ERROR: %d\n", retVal);
-    //     return retVal;
-    // }
-
-    // retVal = MXC_SPI_SetWidth(SPI, SPI_WIDTH_STANDARD);
-
-    // if (retVal != E_NO_ERROR) {
-    //     printf("\nSPI SET WIDTH ERROR: %d\n", retVal);
-    //     return retVal;
-    // }
-    //print_GPIO(0);
-#endif
-#if MASTERSYNC
-        MXC_SPI_MasterTransaction(&req);
-#endif
-
-#if MASTERASYNC
-        NVIC_EnableIRQ(SPI_IRQ);
-        MXC_SPI_MasterTransactionAsync(&req);
-
-        while (SPI_FLAG == 1) {}
-
-#endif
-
-#if MASTERDMA
-    MXC_DMA_ReleaseChannel(0);
-    MXC_DMA_ReleaseChannel(1);
-
-    // NVIC_EnableIRQ(DMA0_IRQn);
-    // NVIC_EnableIRQ(DMA1_IRQn);
-    retVal = MXC_SPI_MasterTransactionDMA(&req);
-
-    while (DMA_FLAG == 0) {}
-
-    DMA_FLAG = 0;
-#endif
-     return retVal;
-}
-#endif
 int AD4696_WRITE(uint16_t addr, uint8_t value) {
     
     int retVal;
@@ -767,6 +824,20 @@ int AD4696_command_convert(uint8_t value,uint8_t len) {
     return retVal;
 }
 
+int AD4696_command_convert_dma(uint8_t value,uint32_t len) {
+
+    int retVal = 0;
+    //mxc_spi_req_t req;
+
+    tx_data_8[0] = value>>1;
+    tx_data_8[1] = 0x00;
+    //tx_data_8[2] = 0x00;
+
+    spi_dma_transmit(tx_data_8, rx_data_8, len);
+ 
+    return retVal;
+}
+
 void AD4696_busy_config(void) {
     // mxc_gpio_cfg_t req;
     // req.mask = MXC_GPIO_PIN_19;
@@ -782,7 +853,7 @@ void AD4696_busy_config(void) {
     //NVIC_EnableIRQ(MXC_GPIO_GET_IRQ(MXC_GPIO_GET_IDX(MXC_GPIO0)));
 }
 
-
+///////////////////////////////////////////* main function *////////////////////////////////////////////////
 int main(void)
 {
     //int retVal;
@@ -807,8 +878,7 @@ int main(void)
 #else
     printf("MAX78000 feather board connection to AD4696.\n\n");
 #endif
-
-
+    MXC_DMA_Init();
     AD4696_GO();
     MAX78000_SPI_Config();
     print_SPI();
@@ -851,15 +921,31 @@ int main(void)
     #endif
     //while(1);
     #ifndef AUTO_CYCLE
+    spi_dma_setup();
     LED_On(LED_GREEN);
-    AD4696_command_convert(0x00,1);
-    AD4696_command_convert(0x00,1);
-    AD4696_command_convert(0x00,0);
-    AD4696_command_convert(0x00,1);
-    AD4696_command_convert(0x00,0);
-    AD4696_command_convert(0x00,1);
-    AD4696_command_convert(0x00,1);
-    AD4696_command_convert(0xA0,0);
+    AD4696_command_convert_dma(0x00,2);
+      //printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    //print_DMA();
+    //while(1);
+    
+    AD4696_command_convert_dma(0x00,2);
+    //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    AD4696_command_convert_dma(0x00,2);
+    //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    AD4696_command_convert_dma(0x00,2);
+    //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    AD4696_command_convert_dma(0x00,2);
+    //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    AD4696_command_convert_dma(0x00,2);
+    //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    AD4696_command_convert_dma(0x00,2);
+    //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    AD4696_command_convert_dma(0x00,2);
+    //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    AD4696_command_convert_dma(0x00,2);
+    //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    AD4696_command_convert_dma(0xA0,2);
+    //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
     LED_Off(LED_GREEN);
     #endif
     AD4696_READ(SPI_STATUS);
@@ -874,6 +960,79 @@ int main(void)
     return E_NO_ERROR;
 }
 
+#if 0
+int AD4696_READ1(ad4696_regs_t *regs) {
+
+    
+    int retVal, addr;
+    //mxc_spi_req_t req;
+    printf("here is the value from read1 function %04x\n",*value);
+    printf("here is the size of value from read1 function %04x\n",sizeof(*value));
+    printf("here is the value addr from read1 function %04x\n", (uint8_t*)(&(value)));
+    printf("here is the base  addr from read1 function %04x\n", &(ad_4696_regs.spi_config_a));
+    printf("here is the diff addr from read1 function %04x\n", (uint8_t*)((value))-&(ad_4696_regs.spi_config_a));
+    return 0;
+    tx_data_8[0] = ((addr + 0x8000) & 0xFF00 )>>8;//0x80;
+    tx_data_8[1] = (addr & 0x00FF )>>0;//0x0C;
+    tx_data_8[2] = 0x00;
+    req.spi = SPI;
+    //req.txData = (uint8_t *)tx_data;
+    //req.rxData = (uint8_t *)rx_data;
+    req.txData = (uint8_t *)tx_data_8;
+    req.rxData = (uint8_t *)rx_data_8;
+    req.txLen = 3;
+    req.rxLen = 3;
+#if 0
+    // req.ssIdx = 1;
+    // req.ssDeassert = 1;
+    // req.txCnt = 0;
+    // req.rxCnt = 0;
+    // req.completeCB = (spi_complete_cb_t)SPI_Callback;
+    // SPI_FLAG = 1;
+
+    //retVal = MXC_SPI_SetDataSize(SPI, 16);
+    // retVal = MXC_SPI_SetDataSize(SPI, 8);
+
+    // if (retVal != E_NO_ERROR) {
+    //     printf("\nSPI SET DATASIZE ERROR: %d\n", retVal);
+    //     return retVal;
+    // }
+
+    // retVal = MXC_SPI_SetWidth(SPI, SPI_WIDTH_STANDARD);
+
+    // if (retVal != E_NO_ERROR) {
+    //     printf("\nSPI SET WIDTH ERROR: %d\n", retVal);
+    //     return retVal;
+    // }
+    //print_GPIO(0);
+#endif
+#if MASTERSYNC
+        MXC_SPI_MasterTransaction(&req);
+#endif
+
+#if MASTERASYNC
+        NVIC_EnableIRQ(SPI_IRQ);
+        MXC_SPI_MasterTransactionAsync(&req);
+
+        while (SPI_FLAG == 1) {}
+
+#endif
+
+#if MASTERDMA
+    MXC_DMA_ReleaseChannel(0);
+    MXC_DMA_ReleaseChannel(1);
+
+    // NVIC_EnableIRQ(DMA0_IRQn);
+    // NVIC_EnableIRQ(DMA1_IRQn);
+    retVal = MXC_SPI_MasterTransactionDMA(&req);
+
+    while (DMA_FLAG == 0) {}
+
+    DMA_FLAG = 0;
+#endif
+     return retVal;
+}
+#endif
 
 #if 0
 int main1(void)
