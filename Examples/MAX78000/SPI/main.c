@@ -69,7 +69,7 @@
 #endif
 
 /***** Definitions *****/
-#define DATA_LEN 1000 // Words
+#define DATA_LEN 60000 // Words
 #define DATA_VALUE 0xA5A5 // This is for master mode only...
 #define VALUE 0xFFFF
 #define SPI_SPEED 50000000 // Bit Rate
@@ -91,8 +91,8 @@ static int g_stream_buffer_size = 64;
 static int g_dma_spi_tx = 0;
 static int g_dma_spi_rx = 1;
 static int g_dma_already_setup = 0;
-uint16_t rx_data[DATA_LEN];
-uint16_t tx_data[DATA_LEN];
+//uint16_t rx_data[DATA_LEN];
+//uint16_t tx_data[DATA_LEN];
 uint8_t rx_data_8[DATA_LEN];
 uint8_t tx_data_8[DATA_LEN];
 mxc_spi_req_t req;
@@ -101,7 +101,8 @@ mxc_spi_pins_t spi_pins;
 int ssel = 1;
 
 volatile int SPI_FLAG;
-volatile uint8_t DMA_FLAG = 0;
+volatile uint8_t DMA0_FLAG = 0;
+volatile uint8_t DMA1_FLAG = 0;
 volatile uint32_t GPIO_FLAG = 0;
 //// ADI AD4696 register addresses
 
@@ -296,7 +297,7 @@ typedef struct {
 ad4696_regs_t ad_4696_regs;
 ////
 /***** Functions *****/
-static void spi_dma_setup(uint32_t sample_size)
+static void spi_dma_setup(uint32_t sample_count,uint32_t sample_size)
 {
     //DEBUG_TOGGLE_H2L();
     //SPI->TX
@@ -339,7 +340,7 @@ static void spi_dma_setup(uint32_t sample_size)
                                     );
     MXC_SPI0->ctrl0 &= ~(MXC_F_SPI_CTRL0_EN);
     MXC_SETFIELD(MXC_SPI0->ctrl1, MXC_F_SPI_CTRL1_TX_NUM_CHAR, (sample_size) << MXC_F_SPI_CTRL1_TX_NUM_CHAR_POS);
-    MXC_SETFIELD(MXC_SPI0->ctrl1, MXC_F_SPI_CTRL1_RX_NUM_CHAR, (sample_size) << MXC_F_SPI_CTRL1_RX_NUM_CHAR_POS);
+    MXC_SETFIELD(MXC_SPI0->ctrl1, MXC_F_SPI_CTRL1_RX_NUM_CHAR, (sample_size*sample_count) << MXC_F_SPI_CTRL1_RX_NUM_CHAR_POS);
     MXC_SPI0->dma   |= (MXC_F_SPI_DMA_TX_FLUSH | MXC_F_SPI_DMA_RX_FLUSH);
         // QSPIn port is enabled
     //MXC_SPI0->ctrl0 |= (MXC_F_SPI_CTRL0_EN);
@@ -353,6 +354,9 @@ static void spi_dma_setup(uint32_t sample_size)
     MXC_SPI0->dma |= (MXC_F_SPI_DMA_DMA_TX_EN);
     MXC_SPI0->dma |= (MXC_F_SPI_DMA_DMA_RX_EN);
     MXC_SPI0->ctrl0 |= (MXC_F_SPI_CTRL0_EN);
+    
+    
+    MXC_DMA->inten = 0x3; // ch0 and ch1 interrupt enabled
     g_dma_already_setup = 1;
     //DEBUG_TOGGLE_H2L();
     //print_DMA();
@@ -364,8 +368,11 @@ static void spi_dma_transmit(uint8_t* src_ptr, uint8_t* dst_ptr, uint32_t sample
 //DEBUG_TOGGLE_H2L();
 //DEBUG_TOGGLE_H2L();
     MXC_DMA->ch[g_dma_spi_tx].src = (uint32_t)src_ptr;
+    MXC_DMA->ch[g_dma_spi_rx].cnt = sample_size*sample_count;
+    MXC_DMA->ch[g_dma_spi_rx].dst = (uint32_t)(dst_ptr);
+    MXC_DMA->ch[g_dma_spi_rx].ctrl += (0x1 << MXC_F_DMA_CTRL_EN_POS);
     for (uint32_t i=0;i<sample_count;i++) {
-        while((MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS) &
+        while((MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS) &&
               (MXC_DMA->ch[g_dma_spi_rx].status & MXC_F_DMA_STATUS_STATUS))
             {
                 ;
@@ -383,12 +390,12 @@ static void spi_dma_transmit(uint8_t* src_ptr, uint8_t* dst_ptr, uint32_t sample
             MXC_DMA->ch[g_dma_spi_tx].cnt = sample_size;
             //MXC_DMA->ch[g_dma_spi_tx].src = (uint32_t)src_ptr;
     
-            MXC_DMA->ch[g_dma_spi_rx].cnt = sample_size;
-            MXC_DMA->ch[g_dma_spi_rx].dst = (uint32_t)(dst_ptr + (sample_size)*i);
+//            MXC_DMA->ch[g_dma_spi_rx].cnt = sample_size;
+//           MXC_DMA->ch[g_dma_spi_rx].dst = (uint32_t)(dst_ptr + (sample_size)*i);
     //DEBUG_TOGGLE_H2L();
             //printf("DMA dst reg =%08X, %08X\n", (MXC_DMA->ch[g_dma_spi_rx].dst),dst_ptr);
             // Enable DMA channel
-            MXC_DMA->ch[g_dma_spi_rx].ctrl += (0x1 << MXC_F_DMA_CTRL_EN_POS);
+       //     MXC_DMA->ch[g_dma_spi_rx].ctrl += (0x1 << MXC_F_DMA_CTRL_EN_POS);
             MXC_DMA->ch[g_dma_spi_tx].ctrl += (0x1 << MXC_F_DMA_CTRL_EN_POS);
             //print_DMA();
             //MXC_Delay(1);
@@ -512,13 +519,34 @@ void SPI_IRQHandler(void)
 
 void DMA0_IRQHandler(void)
 {
-    MXC_DMA_Handler();
+    //TODO: not working
+    //MXC_DMA_Handler();
+    MXC_DMA->ch[g_dma_spi_tx].status = 0xFF;
+    
+    // //DEBUG_TOGGLE_H2L();
+    // uint32_t stat;
+    // //mxc_dma_regs_t *dma = MXC_DMA_GET_IDX(MXC_DMA_CH);
+    // stat = MXC_DMA_ChannelGetFlags(0);
+    // //DEBUG_TOGGLE_H2L();
+    // MXC_DMA_ChannelClearFlags(0,stat);
+    
+    //MXC_DMA_Handler();
+    DMA0_FLAG++;
 }
 
 void DMA1_IRQHandler(void)
 {
+    // TODO: may not be needed
     MXC_DMA_Handler();
-    DMA_FLAG = 1;
+    MXC_DMA->ch[g_dma_spi_tx].status = 0xFF;
+    DEBUG_TOGGLE_H2L();
+    // uint32_t stat;
+    // // mxc_dma_regs_t *dma = MXC_DMA_GET_IDX(MXC_DMA);
+    // stat = MXC_DMA_ChannelGetFlags(1);
+    // //DEBUG_TOGGLE_H2L();
+    // MXC_DMA_ChannelClearFlags(1,stat);
+    //MXC_DMA_Handler();
+    DMA1_FLAG++;
 }
 
 void SPI_Callback(mxc_spi_req_t *req, int error)
@@ -834,7 +862,7 @@ int AD4696_command_convert_dma(uint8_t value, uint32_t sample_count, uint32_t sa
 
     tx_data_8[0] = value>>1;
     tx_data_8[1] = 0x00;
-    //tx_data_8[2] = 0x00;
+    tx_data_8[2] = 0x00;
 
     spi_dma_transmit(tx_data_8, rx_data_8, sample_count, sample_size);
  
@@ -854,6 +882,18 @@ void AD4696_busy_config(void) {
     MXC_GPIO_IntConfig(&ad4696_pins[2], MXC_GPIO_INT_FALLING);
     MXC_GPIO_EnableInt(MXC_GPIO0, MXC_GPIO_PIN_19);
     //NVIC_EnableIRQ(MXC_GPIO_GET_IRQ(MXC_GPIO_GET_IDX(MXC_GPIO0)));
+}
+
+void print_received_buffer(uint32_t nr_sample, uint32_t SAMPLE_SIZE_IN_BYTES) {
+    for(uint32_t j = 0; j< ((nr_sample)* SAMPLE_SIZE_IN_BYTES); j=j+SAMPLE_SIZE_IN_BYTES) {
+        if (SAMPLE_SIZE_IN_BYTES == 2)
+            printf("%02X %02X\t",rx_data_8[j],rx_data_8[j+1]);
+        if (SAMPLE_SIZE_IN_BYTES == 3)
+            printf("%02X %02X %02X\t",rx_data_8[j],rx_data_8[j+1],rx_data_8[j+2]);
+        else
+            continue;
+    }
+    printf("\n");
 }
 
 ///////////////////////////////////////////* main function *////////////////////////////////////////////////
@@ -925,42 +965,21 @@ int main(void)
     #endif
     //while(1);
     #ifndef AUTO_CYCLE
-    spi_dma_setup(SAMPLE_SIZE_IN_BYTES);
+    uint32_t nr_sample = 30000; //should be less than or equal to (DATA_LEN/2)
+    spi_dma_setup(nr_sample, SAMPLE_SIZE_IN_BYTES);
     LED_On(LED_GREEN);
-    uint32_t nr_sample = 100;
-    AD4696_command_convert_dma(0x00, nr_sample ,SAMPLE_SIZE_IN_BYTES);
-    for(uint32_t j = 0; j< ((nr_sample)* SAMPLE_SIZE_IN_BYTES); j=j+SAMPLE_SIZE_IN_BYTES) {
-        if (SAMPLE_SIZE_IN_BYTES == 2)
-            printf("%02X %02X\t",rx_data_8[j],rx_data_8[j+1]);
-        if (SAMPLE_SIZE_IN_BYTES == 3)
-            printf("%02X %02X %02X\t",rx_data_8[j],rx_data_8[j+1],rx_data_8[j+2]);
-        else
-            continue;
-    }
-    printf("\n");
-    AD4696_command_convert_dma(0xA0,  1, SAMPLE_SIZE_IN_BYTES);
-      //printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
-    //print_DMA();
-    //while(1);
     
-    // AD4696_command_convert_dma(0x00,2);
-    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
-    // AD4696_command_convert_dma(0x00,2);
-    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
-    // AD4696_command_convert_dma(0x00,2);
-    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
-    // AD4696_command_convert_dma(0x00,2);
-    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
-    // AD4696_command_convert_dma(0x00,2);
-    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
-    // AD4696_command_convert_dma(0x00,2);
-    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
-    // AD4696_command_convert_dma(0x00,2);
-    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
-    // AD4696_command_convert_dma(0x00,2);
-    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
-    // AD4696_command_convert_dma(0xA0,2);
-    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    //NVIC_EnableIRQ(MXC_DMA_CH_GET_IRQ(0));
+    //NVIC_EnableIRQ(MXC_DMA_CH_GET_IRQ(1));
+    AD4696_command_convert_dma(0x00, nr_sample ,SAMPLE_SIZE_IN_BYTES);
+    //print_received_buffer(nr_sample, SAMPLE_SIZE_IN_BYTES);
+    
+ 
+    spi_dma_setup(1, SAMPLE_SIZE_IN_BYTES);
+    AD4696_command_convert_dma(0xA0,  1, SAMPLE_SIZE_IN_BYTES);
+    NVIC_DisableIRQ(MXC_DMA_CH_GET_IRQ(0));
+    NVIC_DisableIRQ(MXC_DMA_CH_GET_IRQ(1));
+    
     LED_Off(LED_GREEN);
     #endif
     AD4696_READ(SPI_STATUS);
@@ -971,6 +990,8 @@ int main(void)
     AD4696_RESET_HOLD();
     //MXC_GPIO_OutClr(MXC_GPIO1, MXC_GPIO_PIN_1);
     printf("GPIO_flag %d\n",GPIO_FLAG);
+    printf("DMA0_flag %d\n",DMA0_FLAG);
+    printf("DMA1_flag %d\n",DMA1_FLAG);
     printf("\nExample Complete.\n");
     return E_NO_ERROR;
 }
@@ -1335,3 +1356,73 @@ int main1(void)
     //DEBUG_TOGGLE_H2L();
     }
 #endif
+
+
+//printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    //print_DMA();
+    //while(1);
+    
+    // AD4696_command_convert_dma(0x00,2);
+    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    // AD4696_command_convert_dma(0x00,2);
+    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    // AD4696_command_convert_dma(0x00,2);
+    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    // AD4696_command_convert_dma(0x00,2);
+    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    // AD4696_command_convert_dma(0x00,2);
+    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    // AD4696_command_convert_dma(0x00,2);
+    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    // AD4696_command_convert_dma(0x00,2);
+    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    // AD4696_command_convert_dma(0x00,2);
+    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    // AD4696_command_convert_dma(0xA0,2);
+    // //    printf("Read value %02x %02x\n",rx_data_8[0],rx_data_8[1]);
+    
+    
+// this is the function before changes
+// static void spi_dma_transmit(uint8_t* src_ptr, uint8_t* dst_ptr, uint32_t sample_count, uint32_t sample_size) 
+// { 
+// //DEBUG_TOGGLE_H2L();
+// //DEBUG_TOGGLE_H2L();
+//     MXC_DMA->ch[g_dma_spi_tx].src = (uint32_t)src_ptr;
+//     for (uint32_t i=0;i<sample_count;i++) {
+//         while((MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS) &
+//               (MXC_DMA->ch[g_dma_spi_rx].status & MXC_F_DMA_STATUS_STATUS))
+//             {
+//                 ;
+//             }
+//     //DEBUG_TOGGLE_H2L();
+//             if (MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_CTZ_IF)
+//             {
+//                 MXC_DMA->ch[g_dma_spi_tx].status = MXC_F_DMA_STATUS_CTZ_IF;
+//             }
+//             if (MXC_DMA->ch[g_dma_spi_rx].status & MXC_F_DMA_STATUS_CTZ_IF)
+//             {
+//                 MXC_DMA->ch[g_dma_spi_rx].status = MXC_F_DMA_STATUS_CTZ_IF;
+//             }
+//     //DEBUG_TOGGLE_H2L();
+//             MXC_DMA->ch[g_dma_spi_tx].cnt = sample_size;
+//             //MXC_DMA->ch[g_dma_spi_tx].src = (uint32_t)src_ptr;
+    
+//             MXC_DMA->ch[g_dma_spi_rx].cnt = sample_size;
+//             MXC_DMA->ch[g_dma_spi_rx].dst = (uint32_t)(dst_ptr + (sample_size)*i);
+//     //DEBUG_TOGGLE_H2L();
+//             //printf("DMA dst reg =%08X, %08X\n", (MXC_DMA->ch[g_dma_spi_rx].dst),dst_ptr);
+//             // Enable DMA channel
+//             MXC_DMA->ch[g_dma_spi_rx].ctrl += (0x1 << MXC_F_DMA_CTRL_EN_POS);
+//             MXC_DMA->ch[g_dma_spi_tx].ctrl += (0x1 << MXC_F_DMA_CTRL_EN_POS);
+//             //print_DMA();
+//             //MXC_Delay(1);
+//             //asm("NOP");
+//             //asm("NOP");
+//             // Start DMA
+//             MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
+//     //DEBUG_TOGGLE_H2L();
+//             //while((MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS));
+//     //DEBUG_TOGGLE_H2L();
+//     }
+//     return;
+// }
