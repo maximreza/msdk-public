@@ -69,7 +69,7 @@
 #endif
 
 /***** Definitions *****/
-#define DATA_LEN 60000 // Words
+#define DATA_LEN 120000 // Words
 #define DATA_VALUE 0xA5A5 // This is for master mode only...
 #define VALUE 0xFFFF
 #define SPI_SPEED 50000000 // Bit Rate
@@ -91,18 +91,19 @@ static int g_stream_buffer_size = 64;
 static int g_dma_spi_tx = 0;
 static int g_dma_spi_rx = 1;
 static int g_dma_already_setup = 0;
+static int g_sample_size = 2;
 //uint16_t rx_data[DATA_LEN];
 //uint16_t tx_data[DATA_LEN];
-uint8_t rx_data_8[DATA_LEN];
-uint8_t tx_data_8[DATA_LEN];
+static uint8_t rx_data_8[DATA_LEN];
+static uint8_t tx_data_8[6];
 mxc_spi_req_t req;
 mxc_spi_pins_t spi_pins;
 //mxc_spi_regs_t* spi;
 int ssel = 1;
 
 volatile int SPI_FLAG;
-volatile uint8_t DMA0_FLAG = 0;
-volatile uint8_t DMA1_FLAG = 0;
+volatile uint32_t DMA0_FLAG = 0;
+volatile uint32_t DMA1_FLAG = 0;
 volatile uint32_t GPIO_FLAG = 0;
 //// ADI AD4696 register addresses
 
@@ -133,7 +134,7 @@ volatile uint32_t GPIO_FLAG = 0;
 #define TEMP_CTRL       0x0029
 #define CONFIG_IN0      0x0030
 
-// the following two lines are slow to use to measure a loop
+// the following two lines are slow to use to measure a high speed loop
 #define DEBUG_PIN_1H MXC_GPIO_OutSet(MXC_GPIO1,MXC_GPIO_PIN_0);
 #define DEBUG_PIN_1L MXC_GPIO_OutClr(MXC_GPIO1,MXC_GPIO_PIN_0);
 
@@ -299,6 +300,7 @@ ad4696_regs_t ad_4696_regs;
 /***** Functions *****/
 static void spi_dma_setup(uint32_t sample_count,uint32_t sample_size)
 {
+    MXC_DMA->inten = 0x0;
     //DEBUG_TOGGLE_H2L();
     //SPI->TX
     MXC_DMA->ch[g_dma_spi_tx].status = MXC_F_DMA_STATUS_CTZ_IF; // Clear CTZ status flag
@@ -310,7 +312,7 @@ static void spi_dma_setup(uint32_t sample_count,uint32_t sample_size)
                                       (0x0 << MXC_F_DMA_CTRL_BURST_SIZE_POS) +
                                       (0x0 << MXC_F_DMA_CTRL_DSTINC_POS)     +
                                       (0x0 << MXC_F_DMA_CTRL_DSTWD_POS)      +
-                                      (0x1 << MXC_F_DMA_CTRL_SRCINC_POS)     +
+                                      (0x0 << MXC_F_DMA_CTRL_SRCINC_POS)     +
                                       (0x0 << MXC_F_DMA_CTRL_SRCWD_POS)      +
                                       (0x0 << MXC_F_DMA_CTRL_TO_CLKDIV_POS)  +
                                       (0x0 << MXC_F_DMA_CTRL_TO_WAIT_POS)    +
@@ -356,7 +358,7 @@ static void spi_dma_setup(uint32_t sample_count,uint32_t sample_size)
     MXC_SPI0->ctrl0 |= (MXC_F_SPI_CTRL0_EN);
     
     
-    MXC_DMA->inten = 0x3; // ch0 and ch1 interrupt enabled
+    MXC_DMA->inten = 0x1; // ch0 interrupt enabled
     g_dma_already_setup = 1;
     //DEBUG_TOGGLE_H2L();
     //print_DMA();
@@ -367,11 +369,12 @@ static void spi_dma_transmit(uint8_t* src_ptr, uint8_t* dst_ptr, uint32_t sample
 { 
 //DEBUG_TOGGLE_H2L();
 //DEBUG_TOGGLE_H2L();
-    MXC_DMA->ch[g_dma_spi_tx].src = (uint32_t)src_ptr;
+    
+    MXC_DMA->ch[g_dma_spi_tx].src = (uint32_t)(src_ptr);
     MXC_DMA->ch[g_dma_spi_rx].cnt = sample_size*sample_count;
     MXC_DMA->ch[g_dma_spi_rx].dst = (uint32_t)(dst_ptr);
     MXC_DMA->ch[g_dma_spi_rx].ctrl += (0x1 << MXC_F_DMA_CTRL_EN_POS);
-    for (uint32_t i=0;i<sample_count;i++) {
+    for (uint32_t i=0; i < sample_count; i++) {
         while((MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS) &&
               (MXC_DMA->ch[g_dma_spi_rx].status & MXC_F_DMA_STATUS_STATUS))
             {
@@ -407,6 +410,22 @@ static void spi_dma_transmit(uint8_t* src_ptr, uint8_t* dst_ptr, uint32_t sample
             //while((MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS));
     //DEBUG_TOGGLE_H2L();
     }
+    return;
+}
+
+static void spi_dma_transmit_Int(uint8_t* src_ptr, uint8_t* dst_ptr, uint32_t sample_count, uint32_t sample_size) 
+{ 
+//DEBUG_TOGGLE_H2L();
+//DEBUG_TOGGLE_H2L();
+    
+    MXC_DMA->ch[g_dma_spi_tx].src = (uint32_t)(src_ptr);
+    MXC_DMA->ch[g_dma_spi_rx].cnt = sample_size*sample_count;
+    MXC_DMA->ch[g_dma_spi_rx].dst = (uint32_t)(dst_ptr);
+    MXC_DMA->ch[g_dma_spi_rx].ctrl += (0x1 << MXC_F_DMA_CTRL_EN_POS);
+
+    MXC_DMA->ch[g_dma_spi_tx].cnt = sample_size;
+    MXC_DMA->ch[g_dma_spi_tx].ctrl += (0x1 << MXC_F_DMA_CTRL_EN_POS);
+    MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
     return;
 }
 
@@ -521,17 +540,33 @@ void DMA0_IRQHandler(void)
 {
     //TODO: not working
     //MXC_DMA_Handler();
+    MXC_DMA->inten = 0x0;
+    //DEBUG_TOGGLE_H2L();
+    //printf("DMA0_flag %d\n",DMA0_FLAG);
     MXC_DMA->ch[g_dma_spi_tx].status = 0xFF;
-    
-    // //DEBUG_TOGGLE_H2L();
-    // uint32_t stat;
-    // //mxc_dma_regs_t *dma = MXC_DMA_GET_IDX(MXC_DMA_CH);
-    // stat = MXC_DMA_ChannelGetFlags(0);
-    // //DEBUG_TOGGLE_H2L();
-    // MXC_DMA_ChannelClearFlags(0,stat);
-    
-    //MXC_DMA_Handler();
+    // while((MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS) &&
+    //       (MXC_DMA->ch[g_dma_spi_rx].status & MXC_F_DMA_STATUS_STATUS))
+    while(MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS)
+    {
+            ;
+    }
+    //DEBUG_TOGGLE_H2L();
+    if (MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_CTZ_IF)
+    {
+        MXC_DMA->ch[g_dma_spi_tx].status = MXC_F_DMA_STATUS_CTZ_IF;
+    }
+    // if (MXC_DMA->ch[g_dma_spi_rx].status & MXC_F_DMA_STATUS_CTZ_IF)
+    // {
+    //     MXC_DMA->ch[g_dma_spi_rx].status = MXC_F_DMA_STATUS_CTZ_IF;
+    // }
+    //DEBUG_TOGGLE_H2L();
+    MXC_DMA->ch[g_dma_spi_tx].cnt = g_sample_size;
+    MXC_DMA->ch[g_dma_spi_tx].ctrl += (0x1 << MXC_F_DMA_CTRL_EN_POS);
+    MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
     DMA0_FLAG++;
+    if (DMA0_FLAG < 1000)
+        MXC_DMA->inten = 0x1;
+        //DEBUG_TOGGLE_H2L();
 }
 
 void DMA1_IRQHandler(void)
@@ -864,7 +899,8 @@ int AD4696_command_convert_dma(uint8_t value, uint32_t sample_count, uint32_t sa
     tx_data_8[1] = 0x00;
     tx_data_8[2] = 0x00;
 
-    spi_dma_transmit(tx_data_8, rx_data_8, sample_count, sample_size);
+    //spi_dma_transmit(tx_data_8, rx_data_8, sample_count, sample_size);
+    spi_dma_transmit_Int(tx_data_8, rx_data_8, sample_count, sample_size);
  
     return retVal;
 }
@@ -965,20 +1001,30 @@ int main(void)
     #endif
     //while(1);
     #ifndef AUTO_CYCLE
-    uint32_t nr_sample = 30000; //should be less than or equal to (DATA_LEN/2)
+    uint32_t nr_sample = 1000; //should be less than or equal to (DATA_LEN/SAMPLE_SIZE_IN_BYTES)
     spi_dma_setup(nr_sample, SAMPLE_SIZE_IN_BYTES);
     LED_On(LED_GREEN);
     
-    //NVIC_EnableIRQ(MXC_DMA_CH_GET_IRQ(0));
+    NVIC_EnableIRQ(MXC_DMA_CH_GET_IRQ(0));
     //NVIC_EnableIRQ(MXC_DMA_CH_GET_IRQ(1));
     AD4696_command_convert_dma(0x00, nr_sample ,SAMPLE_SIZE_IN_BYTES);
     //print_received_buffer(nr_sample, SAMPLE_SIZE_IN_BYTES);
+    //uint32_t local_count =0;
+     //MXC_Delay(1000);
+    while(DMA0_FLAG<nr_sample)
+    {
+        //local_count ++;
+    }
+    NVIC_DisableIRQ(MXC_DMA_CH_GET_IRQ(0));
+    //print_received_buffer(nr_sample, SAMPLE_SIZE_IN_BYTES);
+    //MXC_Delay(1000);
+    //printf("DMA0_flag %d and %d\n",DMA0_FLAG,local_count);
     
- 
     spi_dma_setup(1, SAMPLE_SIZE_IN_BYTES);
+    NVIC_EnableIRQ(MXC_DMA_CH_GET_IRQ(0));
     AD4696_command_convert_dma(0xA0,  1, SAMPLE_SIZE_IN_BYTES);
     NVIC_DisableIRQ(MXC_DMA_CH_GET_IRQ(0));
-    NVIC_DisableIRQ(MXC_DMA_CH_GET_IRQ(1));
+    //NVIC_DisableIRQ(MXC_DMA_CH_GET_IRQ(1));
     
     LED_Off(LED_GREEN);
     #endif
