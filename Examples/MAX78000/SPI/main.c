@@ -72,11 +72,12 @@
 #define DATA_LEN 120000 // Words
 #define DATA_VALUE 0xA5A5 // This is for master mode only...
 #define VALUE 0xFFFF
-#define SPI_SPEED 50000000 // Bit Rate
+#define SPI_SPEED 1000000 // Bit Rate
 
 //#define AUTO_CYCLE
 #define CHAINING
 #define RELOAD_DEBUG
+#define WITH_STAT_CHECKING
 
 #ifdef BOARD_EVKIT_V1
 #define SPI_INSTANCE_NUM 0
@@ -371,7 +372,7 @@ static void spi_dma_setup(uint32_t sample_count,uint32_t sample_size)
 
         // Clear master done flag
     MXC_SPI0->intfl = MXC_F_SPI_INTFL_MST_DONE;
-    MXC_SETFIELD (MXC_SPI0->dma, MXC_F_SPI_DMA_TX_THD_VAL, (sample_size) << MXC_F_SPI_DMA_TX_THD_VAL_POS);
+    MXC_SETFIELD (MXC_SPI0->dma, MXC_F_SPI_DMA_TX_THD_VAL, (/*sample_size*/ 0x10) << MXC_F_SPI_DMA_TX_THD_VAL_POS);
     MXC_SETFIELD (MXC_SPI0->dma, MXC_F_SPI_DMA_RX_THD_VAL, (0) << MXC_F_SPI_DMA_RX_THD_VAL_POS);
     MXC_SPI0->dma |= (MXC_F_SPI_DMA_TX_FIFO_EN);
     MXC_SPI0->dma |= (MXC_F_SPI_DMA_RX_FIFO_EN);
@@ -693,7 +694,7 @@ void DMA0_IRQHandler_OLD(void)
 
 }
 
-void DMA0_IRQHandler(void)
+void DMA0_IRQHandler_GOOD(void)
 {
 	static ad4696_param_t *p_local_ad4696_param = &ad4696_param;
 #ifdef RELOAD_DEBUG
@@ -711,55 +712,73 @@ void DMA0_IRQHandler(void)
 #endif
 }
 
-
-void DMA0_IRQHandler_KEEP(void)
+#ifdef WITH_STAT_CHECKING
+void DMA0_IRQHandler(void)
 {
-    //TODO: not working
-    //MXC_DMA_Handler();
-
     static ad4696_param_t *p_local_ad4696_param = &ad4696_param;
 
 	if (DMA0_FLAG  == 0)
 	{
+#ifdef RELOAD_DEBUG
 		*((volatile uint32_t *) (0x4000901C)) = 0x1;
+#endif
 		DMA0_FLAG++;
 		if (MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS)
 		{
 			MXC_DMA->ch[g_dma_spi_tx].status = MXC_F_DMA_STATUS_CTZ_IF;
-			MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
-			MXC_DMA->ch[g_dma_spi_tx].cntrld |= (1<<31);
-	        gCount++;
-		}
 
+			//MXC_DMA->ch[g_dma_spi_tx].cntrld |= (1<<31);
+
+			while (SPI->stat);
+			MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
+#ifdef RELOAD_DEBUG
+			gCount++;
+#endif
+		}
+#ifdef RELOAD_DEBUG
     	*((volatile uint32_t *) (0x40009020)) = 0x1;
+#endif
 		return;
 	}
-
+#ifdef RELOAD_DEBUG
 	*((volatile uint32_t *) (0x4000901C)) = 0x1;
-
+#endif
     if (( MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS))
     {
-    	MXC_DMA->ch[g_dma_spi_tx].status = MXC_F_DMA_STATUS_CTZ_IF;
+
+//    	while( MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS);
     	MXC_DMA->ch[g_dma_spi_tx].cntrld |= (1<<31);
         MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
+    	MXC_DMA->ch[g_dma_spi_tx].status = MXC_F_DMA_STATUS_CTZ_IF;
+#ifdef RELOAD_DEBUG
         gLoop1++;
+#endif
     }
     else
     {
-        MXC_DMA->ch[g_dma_spi_tx].status = MXC_F_DMA_STATUS_CTZ_IF;
+
+    	MXC_DMA->ch[g_dma_spi_tx].status = (MXC_F_DMA_STATUS_CTZ_IF);
     	MXC_DMA->ch[g_dma_spi_tx].cntrld |= (1<<31);
+
+        while (SPI->stat);
     	MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
+#ifdef RELOAD_DEBUG
     	gLoop2++;
+#endif
     }
 
     DMA0_FLAG++;
     //DEBUG_TOGGLE_H2L();
     if (DMA0_FLAG >= p_local_ad4696_param->sample_count)
         MXC_DMA->inten = 0x0;
-	*((volatile uint32_t *) (0x40009020)) = 0x1;
+#ifdef RELOAD_DEBUG
+    *((volatile uint32_t *) (0x40009020)) = 0x1;
+#endif
+
     //DEBUG_TOGGLE_H2L(); //5
 
 }
+#endif
 
 #else
 void DMA0_IRQHandler(void)
