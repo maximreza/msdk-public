@@ -72,12 +72,12 @@
 #define DATA_LEN 120000 // Words
 #define DATA_VALUE 0xA5A5 // This is for master mode only...
 #define VALUE 0xFFFF
-#define SPI_SPEED 1000000 // Bit Rate
+#define SPI_SPEED 50000000 // Bit Rate
 
 //#define AUTO_CYCLE
 #define CHAINING
 #define RELOAD_DEBUG
-#define WITH_STAT_CHECKING
+//#define WITH_STAT_CHECKING
 
 #ifdef BOARD_EVKIT_V1
 #define SPI_INSTANCE_NUM 0
@@ -94,8 +94,8 @@ static int g_stream_buffer_size = 64;
 static int g_dma_spi_tx = 0;
 static int g_dma_spi_rx = 1;
 static int g_dma_already_setup = 0;
-static int g_sample_size = 2;
-static int g_sample_count = 1001;
+//static int g_sample_size = 2;
+//static int g_sample_count = 1001;
 //uint16_t rx_data[DATA_LEN];
 //uint16_t tx_data[DATA_LEN];
 static uint8_t rx_data_8[DATA_LEN];
@@ -106,9 +106,10 @@ mxc_spi_pins_t spi_pins;
 int ssel = 1;
 
 int gCount = 0;
-
 int gLoop1 = 0;
 int gLoop2 = 0;
+int gStat = 0;
+int gStat1 = 0;
 
 volatile int SPI_FLAG;
 volatile uint32_t DMA0_FLAG = 0;
@@ -156,11 +157,14 @@ static ad4696_param_t *p_ad4696_param = &ad4696_param;
 #define CONFIG_IN0      0x0030
 
 // the following two lines are slow to use to measure a high speed loop
-#define DEBUG_PIN_1H MXC_GPIO_OutSet(MXC_GPIO1,MXC_GPIO_PIN_0);
-#define DEBUG_PIN_1L MXC_GPIO_OutClr(MXC_GPIO1,MXC_GPIO_PIN_0);
+#define DEBUG_PIN_1H MXC_GPIO_OutSet(MXC_GPIO1,MXC_GPIO_PIN_0)
+#define DEBUG_PIN_1L MXC_GPIO_OutClr(MXC_GPIO1,MXC_GPIO_PIN_0)
+//
 
-#define DEBUG_PIN_H *((volatile uint32_t *) (0x4000901C)) = 0x1;
-#define DEBUG_PIN_L *((volatile uint32_t *) (0x40009020)) = 0x1;
+#define DEBUG_PIN_H *((volatile uint32_t *) (0x4000901C)) = 0x1
+#define DEBUG_PIN_L *((volatile uint32_t *) (0x40009020)) = 0x1
+
+#define AD4696_BUSY_ST ((*((volatile uint32_t *) (0x40008024UL)) >> 19) & (0x1UL))
 
 int AD4696_command_convert(uint8_t value,uint8_t len);
 
@@ -322,7 +326,9 @@ ad4696_regs_t ad_4696_regs;
 #ifdef CHAINING
 static void spi_dma_setup(uint32_t sample_count,uint32_t sample_size)
 {
-    // buffer chaining
+    uint32_t tx_thd_val;
+
+	// buffer chaining
 	MXC_DMA->inten = 0x0;
     //DEBUG_TOGGLE_H2L();
     //SPI->TX
@@ -372,7 +378,11 @@ static void spi_dma_setup(uint32_t sample_count,uint32_t sample_size)
 
         // Clear master done flag
     MXC_SPI0->intfl = MXC_F_SPI_INTFL_MST_DONE;
-    MXC_SETFIELD (MXC_SPI0->dma, MXC_F_SPI_DMA_TX_THD_VAL, (/*sample_size*/ 0x10) << MXC_F_SPI_DMA_TX_THD_VAL_POS);
+    if (sample_size <= 16)
+    	tx_thd_val = sample_size;
+    else
+    	tx_thd_val = 0x2;
+    MXC_SETFIELD (MXC_SPI0->dma, MXC_F_SPI_DMA_TX_THD_VAL, (tx_thd_val/*0x10*/) << MXC_F_SPI_DMA_TX_THD_VAL_POS);
     MXC_SETFIELD (MXC_SPI0->dma, MXC_F_SPI_DMA_RX_THD_VAL, (0) << MXC_F_SPI_DMA_RX_THD_VAL_POS);
     MXC_SPI0->dma |= (MXC_F_SPI_DMA_TX_FIFO_EN);
     MXC_SPI0->dma |= (MXC_F_SPI_DMA_RX_FIFO_EN);
@@ -689,38 +699,62 @@ void DMA0_IRQHandler_OLD(void)
     //DEBUG_TOGGLE_H2L();
     if (DMA0_FLAG < p_local_ad4696_param->sample_count)
         MXC_DMA->inten = 0x1;
-	*((volatile uint32_t *) (0x40009020)) = 0x1;
+	DEBUG_PIN_L;
     //DEBUG_TOGGLE_H2L(); //5
 
 }
 
-void DMA0_IRQHandler_GOOD(void)
+
+#ifndef WITH_STAT_CHECKING
+void DMA0_IRQHandler(void)
 {
 	static ad4696_param_t *p_local_ad4696_param = &ad4696_param;
 #ifdef RELOAD_DEBUG
-	*((volatile uint32_t *) (0x4000901C)) = 0x1;
+	DEBUG_PIN_H;
 #endif
 	MXC_DMA->ch[g_dma_spi_tx].status = MXC_F_DMA_STATUS_CTZ_IF;
 	MXC_DMA->ch[g_dma_spi_tx].cntrld |= (1<<31);
+	//while (SPI->stat);
+//	while ((SPI->stat) || AD4696_BUSY_ST) {
+//		gStat++;
+//	}
 	MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
 
     DMA0_FLAG++;
     if (DMA0_FLAG >= p_local_ad4696_param->sample_count)
         MXC_DMA->inten = 0x0;
 #ifdef RELOAD_DEBUG
-    *((volatile uint32_t *) (0x40009020)) = 0x1;
+    DEBUG_PIN_L;
 #endif
 }
-
-#ifdef WITH_STAT_CHECKING
+#else
 void DMA0_IRQHandler(void)
 {
     static ad4696_param_t *p_local_ad4696_param = &ad4696_param;
 
+    if (DMA0_FLAG == (p_local_ad4696_param->sample_count-2)) {
+    	MXC_DMA->ch[g_dma_spi_tx].status = (MXC_F_DMA_STATUS_CTZ_IF);
+    	MXC_DMA->ch[g_dma_spi_tx].cntrld |= (1<<31);
+
+        //while (SPI->stat);
+    	while ((SPI->stat) || AD4696_BUSY_ST)
+    	{
+    			gStat++;
+    		};
+    	MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
+
+    	//MXC_DMA->ch[g_dma_spi_tx].status = (MXC_F_DMA_STATUS_CTZ_IF);
+    	MXC_DMA->inten = 0x0;
+    	DMA0_FLAG ++;
+    	return;
+    	//while ((SPI->stat) || AD4696_BUSY_ST);
+    	//MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
+    }
+
 	if (DMA0_FLAG  == 0)
 	{
 #ifdef RELOAD_DEBUG
-		*((volatile uint32_t *) (0x4000901C)) = 0x1;
+		DEBUG_PIN_H;
 #endif
 		DMA0_FLAG++;
 		if (MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS)
@@ -729,50 +763,62 @@ void DMA0_IRQHandler(void)
 
 			//MXC_DMA->ch[g_dma_spi_tx].cntrld |= (1<<31);
 
-			while (SPI->stat);
+			while ((SPI->stat) || AD4696_BUSY_ST)
+			{
+					gStat1++;
+			}
 			MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
 #ifdef RELOAD_DEBUG
 			gCount++;
 #endif
 		}
 #ifdef RELOAD_DEBUG
-    	*((volatile uint32_t *) (0x40009020)) = 0x1;
+    	DEBUG_PIN_L;
 #endif
 		return;
 	}
 #ifdef RELOAD_DEBUG
-	*((volatile uint32_t *) (0x4000901C)) = 0x1;
+	DEBUG_PIN_H;
 #endif
-    if (( MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS))
-    {
-
-//    	while( MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS);
-    	MXC_DMA->ch[g_dma_spi_tx].cntrld |= (1<<31);
-        MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
-    	MXC_DMA->ch[g_dma_spi_tx].status = MXC_F_DMA_STATUS_CTZ_IF;
-#ifdef RELOAD_DEBUG
-        gLoop1++;
-#endif
-    }
-    else
-    {
+//    if (( MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS))
+//    {
+//
+////    	while( MXC_DMA->ch[g_dma_spi_tx].status & MXC_F_DMA_STATUS_STATUS);
+//    	MXC_DMA->ch[g_dma_spi_tx].cntrld |= (1<<31);
+//        MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
+//    	MXC_DMA->ch[g_dma_spi_tx].status = MXC_F_DMA_STATUS_CTZ_IF;
+//#ifdef RELOAD_DEBUG
+//        gLoop1++;
+//#endif
+//    }
+//    else
+//    {
 
     	MXC_DMA->ch[g_dma_spi_tx].status = (MXC_F_DMA_STATUS_CTZ_IF);
     	MXC_DMA->ch[g_dma_spi_tx].cntrld |= (1<<31);
 
-        while (SPI->stat);
+        //while (SPI->stat);
+    	while ((SPI->stat) || AD4696_BUSY_ST)
+    	{
+    			gStat++;
+    		};
     	MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
 #ifdef RELOAD_DEBUG
     	gLoop2++;
 #endif
-    }
+//    }
 
     DMA0_FLAG++;
     //DEBUG_TOGGLE_H2L();
-    if (DMA0_FLAG >= p_local_ad4696_param->sample_count)
-        MXC_DMA->inten = 0x0;
+//    if (DMA0_FLAG >= (p_local_ad4696_param->sample_count)) {
+//    	//MXC_DMA->ch[g_dma_spi_tx].status = (MXC_F_DMA_STATUS_CTZ_IF);
+//    	MXC_DMA->inten = 0x0;
+//    	//while ((SPI->stat) || AD4696_BUSY_ST);
+//    	//MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
+//    }
+    //DMA0_FLAG++;
 #ifdef RELOAD_DEBUG
-    *((volatile uint32_t *) (0x40009020)) = 0x1;
+    DEBUG_PIN_L;
 #endif
 
     //DEBUG_TOGGLE_H2L(); //5
@@ -787,7 +833,7 @@ void DMA0_IRQHandler(void)
     //MXC_DMA_Handler();
     static ad4696_param_t *p_local_ad4696_param = &ad4696_param;
     MXC_DMA->inten = 0x0;
-    *((volatile uint32_t *) (0x4000901C)) = 0x1;
+    DEBUG_PIN_H;
     //DEBUG_TOGGLE_H2L();
     //printf("DMA0_flag %d\n",DMA0_FLAG);
     
@@ -818,7 +864,7 @@ void DMA0_IRQHandler(void)
     if (DMA0_FLAG < p_local_ad4696_param->sample_count)
         MXC_DMA->inten = 0x1;
     //DEBUG_TOGGLE_H2L();
-    *((volatile uint32_t *) (0x40009020)) = 0x1;
+    DEBUG_PIN_L;
 }
 #endif
 
@@ -1182,8 +1228,11 @@ void print_received_buffer(uint32_t nr_sample, uint32_t sample_size_in_bytes) {
             printf("0x%02X%02X\t",rx_data_8[j],rx_data_8[j+1]);
         if (sample_size_in_bytes == 3)
             printf("%02X %02X %02X\t",rx_data_8[j],rx_data_8[j+1],rx_data_8[j+2]);
-        else
-            continue;
+        if (sample_size_in_bytes > 4)
+        {
+        	printf("Too many to print!\n");
+        	return;
+        }
     }
     printf("\n");
 }
@@ -1219,7 +1268,7 @@ int main(void)
     MXC_DMA_Init();
     AD4696_GO();
     MAX78000_SPI_Config();
-    print_SPI();
+    //print_SPI();
     AD4696_busy_config();
     
     AD4696_READ(VENDOR_H);
@@ -1262,7 +1311,7 @@ int main(void)
     //uint32_t nr_sample = g_sample_count; //should be less than or equal to (DATA_LEN/sample_size_in_bytes)
     //static ad4696_param_t ad4696_param;
     p_ad4696_param->sample_size = 2;
-    p_ad4696_param->sample_count = 100;
+    p_ad4696_param->sample_count = 200;
     //g_sample_size = ad4696_param.sample_size;
     //spi_dma_setup(nr_sample, sample_size_in_bytes);
     spi_dma_setup(p_ad4696_param->sample_count, p_ad4696_param->sample_size);
@@ -1283,28 +1332,29 @@ int main(void)
 //DEBUG_TOGGLE_H2L();
     //print_received_buffer(p_ad4696_param->sample_count, p_ad4696_param->sample_size);
 // DEBUG_TOGGLE_H2L();
+
+
     uint32_t local_count =0;
      //MXC_Delay(1000);
-    while(DMA0_FLAG < p_ad4696_param->sample_count)
+    while(DMA0_FLAG < ((p_ad4696_param->sample_count)-1))
     {
-        //DEBUG_TOGGLE_H2L();
          local_count ++;
-
-        //DEBUG_TOGGLE_H2L();
-        //DEBUG_TOGGLE_H2L();
     }
-    NVIC_DisableIRQ(MXC_DMA_CH_GET_IRQ(0));
-    print_DMA();
+
+    //MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
+
+    //NVIC_DisableIRQ(MXC_DMA_CH_GET_IRQ(0));
+    //print_DMA();
     //print_received_buffer(nr_sample, sample_size_in_bytes);
     //MXC_Delay(1000);
-    printf("Loop1 = %d, Loop2 = %d\n",gLoop1,gLoop2);
+    printf("Loop1 = %d, Loop2 = %d, gStat = %d gStat1 = %d\n",gLoop1,gLoop2,gStat,gStat1);
     printf("DMA0_flag=%d gCount=%d  local_count=%d\n",DMA0_FLAG,gCount, local_count);
     print_received_buffer(p_ad4696_param->sample_count, p_ad4696_param->sample_size);
-    spi_dma_setup(1, p_ad4696_param->sample_size);
+    spi_dma_setup(1, 2/*p_ad4696_param->sample_size*/);
 
     NVIC_EnableIRQ(MXC_DMA_CH_GET_IRQ(0));
 
-    AD4696_command_convert_dma(0xA0,  1, p_ad4696_param->sample_size);
+    AD4696_command_convert_dma(0xA0,  1, 2/*p_ad4696_param->sample_size*/);
     NVIC_DisableIRQ(MXC_DMA_CH_GET_IRQ(0));
     //NVIC_DisableIRQ(MXC_DMA_CH_GET_IRQ(1));
     
@@ -1324,7 +1374,7 @@ int main(void)
     printf("\nExample Complete.\n");
     return E_NO_ERROR;
 }
-
+///////////////////////////////////////////////////
 #if 0
 int AD4696_READ1(ad4696_regs_t *regs) {
 
