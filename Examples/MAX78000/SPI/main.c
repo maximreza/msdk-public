@@ -100,6 +100,7 @@ static int g_dma_already_setup = 0;
 //uint16_t tx_data[DATA_LEN];
 static uint8_t rx_data_8[DATA_LEN];
 static uint8_t tx_data_8[100];
+static uint8_t ad4696_regs_val[100];
 mxc_spi_req_t req;
 mxc_spi_pins_t spi_pins;
 //mxc_spi_regs_t* spi;
@@ -125,6 +126,90 @@ static ad4696_param_t ad4696_param;
 static ad4696_param_t *p_ad4696_param = &ad4696_param;
 
 //*p_ad4696_param = &ad4696_param;
+typedef enum {
+    spi_config_a_add    = 0x0000,
+    spi_config_b_add,
+    
+    device_type_add     = 0x0003,
+    
+    scratch_pad_add     = 0x000A,
+    
+    vendor_l_add        = 0x000C,
+    vendor_h_add        = 0x000D,
+    loop_mode_add       = 0x000E,
+    
+    spi_config_c_add    = 0x0010,
+    spi_status_add      = 0x0011,
+
+    status_add          = 0x0014,
+    alert_status_1      = 0x0015,
+    setup_add           = 0x0020,
+    ref_ctrl_add,
+    seq_ctrl_add,
+    ac_ctrl_add,
+    std_seq_config_add,
+    
+    gpio_ctrl_add       =0x0026,
+    gp_mode_add,
+    gpio_state_add,
+    temp_ctrl_add,
+
+
+} ad4696_regs_enum_t;
+
+// typedef struct  {
+//     const char *name;
+//     uint8_t     size;
+// } ad4696_regs1_t;
+
+// static const ad4696_regs1_t regs[] = {
+//     {"SPI_CONFIG_A", 1},    {"SPI_CONFIG_B", 1},    {"RFU_1", 1},   {"DEVICE_TYPE",1},
+//     {"RFU_6", 6},           {"SCRATCH_PAD", 1},     {"RFU_1", 1},   {"VENDOR_L",1},
+//     {"VENDOR_H", 1},        {"LOOP_MODE", 1},       {"RFU_1", 1},   {"SPI_CONFIG_C", 1},
+//     {"SPI_STATUS", 1},      {"RFU_2",2 },           {"STATUS", 1},
+
+// };
+
+typedef struct  {
+    const char *name;
+    const ad4696_regs_enum_t add;
+    const uint8_t     size;
+} ad4696_regs2_t;
+
+static ad4696_regs2_t regs[] = {
+    {"SPI_CONFIG_A", spi_config_a_add, 1},      {"SPI_CONFIG_B", spi_config_b_add, 1},  {"DEVICE_TYPE", device_type_add, 1},
+    {"SCRATCH_PAD", scratch_pad_add, 1},        {"VENDOR_L", vendor_l_add, 1},          {"VENDOR_H", vendor_h_add, 1},
+    {"LOOP_MODE", loop_mode_add, 1},            {"SPI_CONFIG_C", spi_config_c_add, 1},  {"SPI_STATUS", spi_status_add, 1},      
+    {"STATUS", status_add, 1},                  {"SETUP", setup_add, 1},                {"REF_CTRL", ref_ctrl_add, 1}, 
+    {"SEQ_CTRL", seq_ctrl_add, 1},              {"AC_CTRL", ac_ctrl_add, 1},            {"STD_SEQ", std_seq_config_add, 2},
+    {"GPIO_CTRL", gpio_ctrl_add, 1},            {"GP_STAT", gp_mode_add, 1},            {"GPIO_STATE", gpio_state_add, 1},
+    {"TEMP_CTRL", temp_ctrl_add, 1},
+
+};
+//// small test
+typedef struct {
+    uint32_t a;
+    uint32_t b;
+} test_val_t;
+
+typedef enum {
+    A,
+    B,
+} test_enum_t;
+
+typedef struct {
+    test_enum_t enam;
+    test_val_t val;
+} mixed_array_t;
+
+const uint8_t aa = 3;
+const uint8_t bb = 4;
+test_val_t vval;
+
+//static mixed_array_t arr[] = {{A,Val.a},{B,Val.b},};
+
+////
+
 
 
 //// ADI AD4696 register addresses
@@ -165,6 +250,14 @@ static ad4696_param_t *p_ad4696_param = &ad4696_param;
 #define DEBUG_PIN_L *((volatile uint32_t *) (0x40009020)) = 0x1
 
 #define AD4696_BUSY_ST ((*((volatile uint32_t *) (0x40008024UL)) >> 19) & (0x1UL))
+
+void test (test_val_t *val) {
+    
+    val->a =1;
+    val->b = 2;
+}
+
+
 
 int AD4696_command_convert(uint8_t value,uint8_t len);
 
@@ -977,6 +1070,95 @@ void AD4696_GO(void){
     MXC_GPIO_OutSet(MXC_GPIO1, MXC_GPIO_PIN_1);
 }
 
+int AD4696_READ_2(uint16_t addr, uint8_t size, uint8_t* val) {
+    
+    int retVal;
+    //mxc_spi_req_t req;
+
+    tx_data_8[0] = ((addr + 0x8000) & 0xFF00 )>>8;//0x80;
+    tx_data_8[1] = (addr & 0x00FF )>>0;//0x0C;
+    tx_data_8[2] = 0x00;
+    req.spi = SPI;
+    //req.txData = (uint8_t *)tx_data;
+    //req.rxData = (uint8_t *)rx_data;
+    req.txData = (uint8_t *)tx_data_8;
+    req.rxData = (uint8_t *)rx_data_8;
+    req.txLen = 2 + size;
+    req.rxLen = 2 + size;
+
+#if MASTERSYNC
+        retVal = MXC_SPI_MasterTransaction(&req);
+#endif
+
+#if MASTERASYNC
+        NVIC_EnableIRQ(SPI_IRQ);
+        MXC_SPI_MasterTransactionAsync(&req);
+
+        while (SPI_FLAG == 1) {}
+
+#endif
+
+#if MASTERDMA
+    MXC_DMA_ReleaseChannel(0);
+    MXC_DMA_ReleaseChannel(1);
+
+    // NVIC_EnableIRQ(DMA0_IRQn);
+    // NVIC_EnableIRQ(DMA1_IRQn);
+    retVal = MXC_SPI_MasterTransactionDMA(&req);
+
+    while (DMA_FLAG == 0) {}
+
+    DMA_FLAG = 0;
+#endif
+    val[addr]=rx_data_8[2];
+    if (size == 2)
+        val[addr+1]=rx_data_8[3];
+     return retVal;
+}
+
+int AD4696_READ_1(uint16_t addr, uint8_t size) {
+    
+    int retVal;
+    //mxc_spi_req_t req;
+
+    tx_data_8[0] = ((addr + 0x8000) & 0xFF00 )>>8;//0x80;
+    tx_data_8[1] = (addr & 0x00FF )>>0;//0x0C;
+    tx_data_8[2] = 0x00;
+    req.spi = SPI;
+    //req.txData = (uint8_t *)tx_data;
+    //req.rxData = (uint8_t *)rx_data;
+    req.txData = (uint8_t *)tx_data_8;
+    req.rxData = (uint8_t *)rx_data_8;
+    req.txLen = 2 + size;
+    req.rxLen = 2 + size;
+
+#if MASTERSYNC
+        retVal = MXC_SPI_MasterTransaction(&req);
+#endif
+
+#if MASTERASYNC
+        NVIC_EnableIRQ(SPI_IRQ);
+        MXC_SPI_MasterTransactionAsync(&req);
+
+        while (SPI_FLAG == 1) {}
+
+#endif
+
+#if MASTERDMA
+    MXC_DMA_ReleaseChannel(0);
+    MXC_DMA_ReleaseChannel(1);
+
+    // NVIC_EnableIRQ(DMA0_IRQn);
+    // NVIC_EnableIRQ(DMA1_IRQn);
+    retVal = MXC_SPI_MasterTransactionDMA(&req);
+
+    while (DMA_FLAG == 0) {}
+
+    DMA_FLAG = 0;
+#endif
+     return retVal;
+}
+
 int AD4696_READ(uint16_t addr) {
     
     int retVal;
@@ -1338,7 +1520,11 @@ int main(void)
      //MXC_Delay(1000);
     while(DMA0_FLAG < ((p_ad4696_param->sample_count)-1))
     {
+         
+	//DEBUG_PIN_H;
          local_count ++;
+    //DEBUG_PIN_L;     
+        
     }
 
     //MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
@@ -1365,13 +1551,42 @@ int main(void)
     printf("Status register %08x\n",rx_data_8[2]);
     AD4696_READ(SCRATCH_PAD);
 
-    AD4696_RESET_HOLD();
+ //   AD4696_RESET_HOLD();
     //MXC_GPIO_OutClr(MXC_GPIO1, MXC_GPIO_PIN_1);
     printf("GPIO_flag %d\n",GPIO_FLAG);
     printf("DMA0_flag %d\n",DMA0_FLAG);
     printf("DMA1_flag %d\n",DMA1_FLAG);
     printf("gCount_flag %d\n",gCount);
+    for (int reg_count = 0; reg_count< (sizeof(regs)/sizeof(ad4696_regs2_t)); reg_count++) {
+ //       printf ("%s %d\n", regs[reg_count].name,regs[reg_count].size);
+        // AD4696_READ_1(regs[reg_count].add,regs[reg_count].size);
+        // ad4696_regs_val[regs[reg_count].add]=rx_data_8[2];
+        // if (regs[reg_count].size == 2)
+        //     ad4696_regs_val[regs[reg_count].add+1]=rx_data_8[3];
+        AD4696_READ_2(regs[reg_count].add, regs[reg_count].size, &ad4696_regs_val);
+    }
+    printf("\nAddress   Name           Size   Value\n---------------------------------------\n");
+    for (int reg_count = 0; reg_count< (sizeof(regs)/sizeof(ad4696_regs2_t)); reg_count++) {
+        if (regs[reg_count].size == 2)
+            printf ("%04X      %-13s  %d \t0x%02x%02x\n", 
+                            regs[reg_count].add,
+                            regs[reg_count].name,
+                            regs[reg_count].size,
+                            ad4696_regs_val[regs[reg_count].add+1],
+                            ad4696_regs_val[regs[reg_count].add]);
+        else
+            printf ("%04X      %-13s  %d \t0x%02x\n", 
+                            regs[reg_count].add,
+                            regs[reg_count].name,
+                            regs[reg_count].size,
+                            ad4696_regs_val[regs[reg_count].add]);
+    }
+    printf("%02x\n",ad4696_regs_val[vendor_l_add]);
+    printf("%d\n",(sizeof(regs)/sizeof(ad4696_regs2_t)));
+    test(&vval);
+    printf("%d %d\n", vval.a, vval.b);
     printf("\nExample Complete.\n");
+    AD4696_RESET_HOLD();
     return E_NO_ERROR;
 }
 ///////////////////////////////////////////////////
