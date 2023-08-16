@@ -1563,7 +1563,7 @@ int main(void)
         // ad4696_regs_val[regs[reg_count].add]=rx_data_8[2];
         // if (regs[reg_count].size == 2)
         //     ad4696_regs_val[regs[reg_count].add+1]=rx_data_8[3];
-        AD4696_READ_2(regs[reg_count].add, regs[reg_count].size, &ad4696_regs_val);
+        AD4696_READ_2(regs[reg_count].add, regs[reg_count].size, ad4696_regs_val);
     }
     printf("\nAddress   Name           Size   Value\n---------------------------------------\n");
     for (int reg_count = 0; reg_count< (sizeof(regs)/sizeof(ad4696_regs2_t)); reg_count++) {
