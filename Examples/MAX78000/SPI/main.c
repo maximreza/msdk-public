@@ -47,6 +47,7 @@
 #include "board.h"
 #include "dma.h"
 #include "mxc_device.h"
+#include "mxc_sys.h"
 #include "mxc_delay.h"
 #include "mxc_pins.h"
 #include "nvic_table.h"
@@ -55,6 +56,9 @@
 #include "uart.h"
 #include "gpio.h"
 #include "led.h"
+#include "lp.h"
+#include "tmr.h"
+#include "tmr_revb.h"
 
 /***** Pre-processors *****/
 #define MASTERSYNC 1
@@ -78,6 +82,7 @@
 #define CHAINING
 #define RELOAD_DEBUG
 //#define WITH_STAT_CHECKING
+//#define WITH_PWM
 
 #ifdef BOARD_EVKIT_V1
 #define SPI_INSTANCE_NUM 0
@@ -89,6 +94,37 @@
 #define SPI_IRQ SPI0_IRQn
 #endif
 
+
+///// TIMER definitions
+//#define OST_CLOCK_SOURCE MXC_TMR_8K_CLK // \ref mxc_tmr_clock_t
+#define PWM_CLOCK_SOURCE MXC_TMR_APB_CLK // \ref mxc_tmr_clock_t
+//#define CONT_CLOCK_SOURCE MXC_TMR_8M_CLK // \ref mxc_tmr_clock_t
+
+// Parameters for Continuous timer
+//#define OST_FREQ 1 // (Hz)
+//#define OST_TIMER MXC_TMR5 // Can be MXC_TMR0 through MXC_TMR5
+
+#define FREQ 10000 // (Hz)
+#define DUTY_CYCLE 40 // (%)
+#define PWM_TIMER MXC_TMR3 // must change PWM_PORT and PWM_PIN if changed
+
+// Parameters for Continuous timer
+//#define CONT_FREQ 2 // (Hz)
+//#define CONT_TIMER MXC_TMR1 // Can be MXC_TMR0 through MXC_TMR5
+
+// Check Frequency bounds
+// #if (FREQ == 0)
+// #error "Frequency cannot be 0."
+// #elif (FREQ > 100000)
+// #error "Frequency cannot be over 100000."
+// #endif
+
+// Check duty cycle bounds
+#if (DUTY_CYCLE < 0) || (DUTY_CYCLE > 100)
+#error "Duty Cycle must be between 0 and 100."
+#endif
+
+/////
 /***** Globals *****/
 static int g_stream_buffer_size = 64;
 static int g_dma_spi_tx = 0;
@@ -112,8 +148,8 @@ int gLoop2 = 0;
 int gStat = 0;
 int gStat1 = 0;
 
-volatile int SPI_FLAG;
-volatile uint32_t DMA0_FLAG = 0;
+volatile int SPI_FLAG = 0;
+static uint32_t DMA0_FLAG = 0;
 volatile uint32_t DMA1_FLAG = 0;
 volatile uint32_t GPIO_FLAG = 0;
 
@@ -359,7 +395,11 @@ inline void DEBUG_TOGGLE_L2H(void){
 
 // configure AD4696 nRESET(p1.1), CNV(p1.6) and BUSY(p0.19). p1.0 is debug pin
 const mxc_gpio_cfg_t ad4696_pins[] = {
-    { MXC_GPIO1, MXC_GPIO_PIN_6, MXC_GPIO_FUNC_IN, MXC_GPIO_PAD_WEAK_PULL_UP, MXC_GPIO_VSSEL_VDDIO },  //CNV
+#ifndef WITH_PWM
+    { MXC_GPIO1, MXC_GPIO_PIN_6, MXC_GPIO_FUNC_IN, MXC_GPIO_PAD_WEAK_PULL_UP, MXC_GPIO_VSSEL_VDDIO },  //CNV when CS is connected to CNV
+#else
+    { MXC_GPIO1, MXC_GPIO_PIN_6, MXC_GPIO_FUNC_ALT1, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO },  //CNV  with timer PWM
+#endif
     { MXC_GPIO1, MXC_GPIO_PIN_1, MXC_GPIO_FUNC_OUT, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO },  //nRESET
     { MXC_GPIO0, MXC_GPIO_PIN_19, MXC_GPIO_FUNC_IN, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO },  //BUSY
     { MXC_GPIO1, MXC_GPIO_PIN_0, MXC_GPIO_FUNC_OUT, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO },  //Debug
@@ -416,6 +456,98 @@ typedef struct {
 ad4696_regs_t ad_4696_regs;
 ////
 /***** Functions *****/
+
+//void PWMTimerHandler()
+void TMR3_IRQHandler(void)
+{
+    static ad4696_param_t *p_local_ad4696_param = &ad4696_param;
+    // Clear interrupt
+    DEBUG_PIN_H;
+    MXC_TMR3->intfl = (MXC_F_TMR_REVB_INTFL_IRQ_A | MXC_F_TMR_REVB_INTFL_IRQ_B);
+//     //*((volatile uint32_t *) (0x4001300C)) |= (MXC_F_TMR_REVB_INTFL_IRQ_A | MXC_F_TMR_REVB_INTFL_IRQ_B);
+     MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
+     MXC_DMA->ch[g_dma_spi_tx].status = MXC_F_DMA_STATUS_CTZ_IF;
+     MXC_DMA->ch[g_dma_spi_tx].cntrld |= (1<<31);
+// 	//while (SPI->stat);
+// //	while ((SPI->stat) || AD4696_BUSY_ST) {
+// //		gStat++;
+// //	}
+// 	//MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
+
+     DMA0_FLAG++;
+     if (DMA0_FLAG >= p_local_ad4696_param->sample_count) {
+    	    MXC_TMR3->intfl = (MXC_F_TMR_REVB_INTFL_IRQ_A | MXC_F_TMR_REVB_INTFL_IRQ_B);
+    	    MXC_TMR_Stop(PWM_TIMER);
+    	    NVIC_DisableIRQ(TMR3_IRQn);
+    	    MXC_TMR_DisableInt(PWM_TIMER);
+     }
+//     //     MXC_DMA->inten = 0x0;
+//     //mxc_tmr_revb_regs_t *tmr;
+//      //tmr->intfl |= (MXC_F_TMR_REVB_INTFL_IRQ_A | MXC_F_TMR_REVB_INTFL_IRQ_B);
+//     //*((volatile uint32_t *) (0x4001300C)) |= (MXC_F_TMR_REVB_INTFL_IRQ_A | MXC_F_TMR_REVB_INTFL_IRQ_B);
+//     //MXC_TMR_ClearFlags(PWM_TIMER);
+//     //LED_Toggle(LED1);
+    DEBUG_PIN_L;
+}
+
+
+
+void PWMTimer()
+{
+    // Declare variables
+    mxc_tmr_cfg_t tmr; // to configure timer
+    unsigned int periodTicks = MXC_TMR_GetPeriod(PWM_TIMER, PWM_CLOCK_SOURCE, 1, FREQ);
+    unsigned int dutyTicks = periodTicks * DUTY_CYCLE / 100;
+
+    /*
+    Steps for configuring a timer for PWM mode:
+    1. Disable the timer
+    2. Set the pre-scale value
+    3. Set polarity, PWM parameters
+    4. Configure the timer for PWM mode
+    5. Enable Timer
+    */
+
+    MXC_TMR_Shutdown(PWM_TIMER);
+
+    tmr.pres = TMR_PRES_1;
+    tmr.mode = TMR_MODE_PWM;
+    tmr.bitMode = TMR_BIT_MODE_32;
+    tmr.clock = PWM_CLOCK_SOURCE;
+    tmr.cmp_cnt = periodTicks;
+    tmr.pol = 1;
+
+    if (MXC_TMR_Init(PWM_TIMER, &tmr, true) != E_NO_ERROR) {
+        printf("Failed PWM timer Initialization.\n");
+        return;
+    }
+
+    if (MXC_TMR_SetPWM(PWM_TIMER, dutyTicks) != E_NO_ERROR) {
+        printf("Failed TMR_PWMConfig.\n");
+        return;
+    }
+    NVIC_EnableIRQ(TMR3_IRQn);
+    MXC_TMR_EnableInt(PWM_TIMER);
+
+    //MXC_NVIC_SetVector(TMR3_IRQn, PWMTimerHandler);
+    MXC_TMR_Start(PWM_TIMER);
+    printf("PWM started.\n\n");
+}
+
+void PWMTimer_Off(void) {
+
+	MXC_TMR_Stop(PWM_TIMER);
+	NVIC_DisableIRQ(TMR3_IRQn);
+	MXC_TMR_DisableInt(PWM_TIMER);
+
+	//MXC_NVIC_SetVector(TMR3_IRQn, PWMTimerHandler);
+
+	printf("PWM stopped.\n\n");
+
+}
+
+
+
 #ifdef CHAINING
 static void spi_dma_setup(uint32_t sample_count,uint32_t sample_size)
 {
@@ -647,6 +779,30 @@ static void spi_dma_transmit_rld_Int(uint8_t* src_ptr, uint8_t* dst_ptr, uint32_
     MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
     //MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
 
+    return;
+}
+
+static void spi_dma_transmit_rld_Timer(uint8_t* src_ptr, uint8_t* dst_ptr, uint32_t sample_count, uint32_t sample_size) 
+{ 
+
+    
+    MXC_DMA->ch[g_dma_spi_tx].src = (uint32_t)(src_ptr);
+    //reload
+    MXC_DMA->ch[g_dma_spi_tx].srcrld = (uint32_t)(src_ptr);
+    MXC_DMA->ch[g_dma_spi_tx].cntrld = sample_size;
+    //MXC_DMA->ch[g_dma_spi_rx].ctrl += (0x1 << MXC_F_DMA_CTRL_RLDEN_POS); //original line probably wrong
+    
+    MXC_DMA->ch[g_dma_spi_rx].cnt = sample_size*sample_count;
+    MXC_DMA->ch[g_dma_spi_rx].dst = (uint32_t)(dst_ptr);
+    MXC_DMA->ch[g_dma_spi_rx].ctrl += (0x1 << MXC_F_DMA_CTRL_EN_POS);
+
+    MXC_DMA->ch[g_dma_spi_tx].cnt = sample_size;
+    
+    MXC_DMA->ch[g_dma_spi_tx].ctrl += (0x3 << MXC_F_DMA_CTRL_EN_POS);  // enable both reload and enable.
+    //MXC_DMA->ch[g_dma_spi_tx].ctrl += (0x1 << MXC_F_DMA_CTRL_RLDEN_POS);
+
+    //MXC_SPI0->ctrl0 |= MXC_F_SPI_CTRL0_START;
+    PWMTimer();
     return;
 }
 
@@ -1382,7 +1538,11 @@ int AD4696_command_convert_dma(uint8_t value, uint32_t sample_count, uint32_t sa
 
     //spi_dma_transmit(tx_data_8, rx_data_8, sample_count, sample_size);
 #ifdef CHAINING
+#ifndef WITH_PWM
     spi_dma_transmit_rld_Int(tx_data_8, rx_data_8, sample_count, sample_size);
+#else
+    spi_dma_transmit_rld_Timer(tx_data_8, rx_data_8, sample_count, sample_size);
+#endif
 #else
     spi_dma_transmit_Int(tx_data_8, rx_data_8, sample_count, sample_size);
 #endif
@@ -1480,6 +1640,7 @@ int main(void)
     #ifdef AUTO_CYCLE
     AD4696_WRITE(AC_CTRL, (0x0<<1)+1); // 0x0<<1 is the fastest
     #endif
+    
     AD4696_WRITE(SETUP, 0x14); // conversion starts
     //MXC_Delay(12);
     #ifdef AUTO_CYCLE
@@ -1500,9 +1661,12 @@ int main(void)
     //MXC_Delay(100);
     //printf("sample_count= %d and sample_size = %d\n",p_ad4696_param->sample_count,p_ad4696_param->sample_size);
     LED_On(LED_GREEN);
-    
+#ifndef WITH_PWM
     NVIC_EnableIRQ(MXC_DMA_CH_GET_IRQ(0));
+#endif
+    //
     //MXC_Delay(200);
+    // ultimately the following interrupt is an important interrupt to have
     //NVIC_EnableIRQ(MXC_DMA_CH_GET_IRQ(1));
     //AD4696_command_convert_dma(0x00, nr_sample ,sample_size_in_bytes);
     AD4696_command_convert_dma(0x00, p_ad4696_param->sample_count, p_ad4696_param->sample_size);
@@ -1537,11 +1701,13 @@ int main(void)
     printf("DMA0_flag=%d gCount=%d  local_count=%d\n",DMA0_FLAG,gCount, local_count);
     print_received_buffer(p_ad4696_param->sample_count, p_ad4696_param->sample_size);
     spi_dma_setup(1, 2/*p_ad4696_param->sample_size*/);
-
+#ifndef WITH_PWM
     NVIC_EnableIRQ(MXC_DMA_CH_GET_IRQ(0));
-
+#endif
     AD4696_command_convert_dma(0xA0,  1, 2/*p_ad4696_param->sample_size*/);
+#ifndef WITH_PWM
     NVIC_DisableIRQ(MXC_DMA_CH_GET_IRQ(0));
+#endif
     //NVIC_DisableIRQ(MXC_DMA_CH_GET_IRQ(1));
     
     LED_Off(LED_GREEN);
